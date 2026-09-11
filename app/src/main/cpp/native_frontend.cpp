@@ -2,9 +2,11 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <EGL/egl.h>
+#include <GLES3/gl3.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -79,9 +81,58 @@ void core_log(enum retro_log_level level, const char* format, ...) {
 }
 
 uintptr_t hardware_framebuffer() { return g.hardwareFramebuffer; }
-retro_proc_address_t hardware_proc_address(const char* symbol) {
-    return reinterpret_cast<retro_proc_address_t>(eglGetProcAddress(symbol));
+// Desktop OpenGL exposes glDrawBuffer(GLenum), while GLES3 only exposes
+// glDrawBuffers(GLsizei, const GLenum*). Dolphin's OpenGL backend still asks
+// for the desktop entry point even when it is running in its GLES mode. A
+// small adapter keeps that required symbol non-null and selects the color
+// attachment for our frontend-owned FBO.
+void gles_draw_buffer(GLenum mode) {
+    (void)mode;
+    GLint framebuffer = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+    GLenum target = framebuffer == 0 ? GL_BACK : GL_COLOR_ATTACHMENT0;
+    // GL_BACK_LEFT/GL_BACK_RIGHT are desktop-only names. They are both the
+    // single Android window backbuffer in this frontend, so all default-FBO
+    // selections map to GL_BACK.
+    glDrawBuffers(1, &target);
 }
+
+retro_proc_address_t hardware_proc_address(const char* symbol) {
+    if (!symbol) return nullptr;
+    if (std::strcmp(symbol, "glDrawBuffer") == 0)
+        return reinterpret_cast<retro_proc_address_t>(&gles_draw_buffer);
+    // Android exposes most GLES entry points through eglGetProcAddress, but
+    // a few drivers only publish core symbols through the process namespace.
+    // Returning both makes the callback usable by cores with large generated
+    // GL symbol tables (notably Flycast and Dolphin).
+    void* address = reinterpret_cast<void*>(eglGetProcAddress(symbol));
+    if (!address) address = dlsym(RTLD_DEFAULT, symbol);
+    return reinterpret_cast<retro_proc_address_t>(address);
+}
+
+retro_time_t perf_time_usec() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+}
+
+retro_perf_tick_t perf_counter() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<retro_perf_tick_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+uint64_t perf_cpu_features() { return 0; }
+void perf_register(retro_perf_counter* counter) { if (counter) counter->registered = true; }
+void perf_start(retro_perf_counter* counter) {
+    if (counter) { counter->start = perf_counter(); ++counter->call_cnt; }
+}
+void perf_stop(retro_perf_counter* counter) {
+    if (counter) counter->total += perf_counter() - counter->start;
+}
+void perf_log() {}
+
+bool rumble_state(unsigned, retro_rumble_effect, uint16_t) { return false; }
+void sensor_set_state(unsigned, retro_sensor_action, unsigned) {}
+float sensor_get_input(unsigned, unsigned) { return 0.0f; }
 
 bool environment(unsigned command, void* data) {
     switch (command) {
@@ -152,6 +203,44 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS: return true;
         case RETRO_ENVIRONMENT_GET_LANGUAGE:
             *static_cast<unsigned*>(data) = RETRO_LANGUAGE_ENGLISH; return true;
+        case RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION:
+            if (data) *static_cast<unsigned*>(data) = 0;
+            return true;
+        case RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE:
+            if (data) *static_cast<float*>(data) = 60.0f;
+            return true;
+        case RETRO_ENVIRONMENT_GET_TARGET_SAMPLE_RATE:
+            if (data) *static_cast<unsigned*>(data) = 48000;
+            return true;
+        case RETRO_ENVIRONMENT_GET_FASTFORWARDING:
+            if (data) *static_cast<bool*>(data) = false;
+            return true;
+        case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
+            if (data) *static_cast<bool*>(data) = false;
+            return true;
+        case RETRO_ENVIRONMENT_GET_PERF_INTERFACE:
+            if (!data) return false;
+            *static_cast<retro_perf_callback*>(data) = {
+                perf_time_usec, perf_cpu_features, perf_counter,
+                perf_register, perf_start, perf_stop, perf_log
+            };
+            return true;
+        case RETRO_ENVIRONMENT_GET_VFS_INTERFACE:
+            // The cores have a complete local-file fallback. Explicitly clear
+            // the output instead of leaving a stale pointer in a reused struct.
+            if (data) static_cast<retro_vfs_interface_info*>(data)->iface = nullptr;
+            return false;
+        case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE:
+            if (!data) return false;
+            static_cast<retro_rumble_interface*>(data)->set_rumble_state = rumble_state;
+            return true;
+        case RETRO_ENVIRONMENT_GET_SENSOR_INTERFACE:
+            if (!data) return false;
+            static_cast<retro_sensor_interface*>(data)->set_sensor_state = sensor_set_state;
+            static_cast<retro_sensor_interface*>(data)->get_sensor_input = sensor_get_input;
+            return true;
+        case RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE:
+            return false;
         case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION:
             *static_cast<unsigned*>(data) = 0; return true;
         case RETRO_ENVIRONMENT_SET_VARIABLES: {
@@ -162,7 +251,17 @@ bool environment(unsigned command, void* data) {
                 if (split != std::string::npos) choices = choices.substr(split + 1);
                 size_t first = choices.find_first_not_of(' ');
                 if (first != std::string::npos) choices.erase(0, first);
-                g.variables[item->key] = choices.substr(0, choices.find('|'));
+                // Flycast's threaded renderer uses a GL context from a
+                // background thread. This frontend intentionally runs the
+                // core on the GLSurfaceView thread, so force its safe
+                // single-threaded mode even though the upstream default is
+                // enabled. This also prevents a context-ownership crash on
+                // Android devices.
+                const std::string key = item->key;
+                if (key.find("_threaded_rendering") != std::string::npos)
+                    g.variables[key] = "disabled";
+                else
+                    g.variables[key] = choices.substr(0, choices.find('|'));
                 ++item;
             }
             return true;
@@ -211,6 +310,9 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
         case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY:
         case RETRO_ENVIRONMENT_SET_MESSAGE:
+        case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:
+        case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK:
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
             return true;
         default:
             __android_log_print(ANDROID_LOG_DEBUG, "EmuAllNative", "Unsupported libretro environment command: %u", command);

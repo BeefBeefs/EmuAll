@@ -470,6 +470,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             if (coreName.contains("ppsspp")) {
                 hardwareTargetWidth = 480
                 hardwareTargetHeight = 272
+            } else if (coreName.contains("dolphin")) {
+                // Dolphin's native GameCube EFB is 640x528 at 1x internal
+                // resolution. Matching that height avoids the core drawing
+                // past the attachment while it presents through the libretro
+                // system framebuffer.
+                hardwareTargetWidth = 640
+                hardwareTargetHeight = 528
             } else {
                 // N64, Dreamcast, GameCube/Wii and Play! advertise a 4:3
                 // 640x480-style backbuffer. The core can still change its

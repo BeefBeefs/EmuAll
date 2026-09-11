@@ -125,6 +125,42 @@
                     android:textColor="@color/text_muted"
                     android:textSize="12sp" />
 
+                <LinearLayout
+                    android:id="@+id/biosSection"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_accent"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="BIOS / SYSTEM FILES"
+                        android:textColor="@color/accent"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/biosStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:lineSpacingExtra="2dp"
+                        android:textColor="@color/text_muted"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/biosButton"
+                        style="@style/EmuButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/button_secondary"
+                        android:text="Select BIOS Folder" />
+                </LinearLayout>
+
                 <Button
                     android:id="@+id/chooseGameButton"
                     style="@style/EmuButton"

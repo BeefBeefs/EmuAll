@@ -41,6 +41,7 @@ object Systems {
         SystemDefinition(
             "dreamcast", "DREAMCAST", "Dreamcast / NAOMI", "Flycast",
             setOf("cdi", "gdi", "chd", "cue", "bin", "elf", "zip", "7z", "lst", "dat", "m3u"),
+            biosRequired = true,
             minimumGles = 0x00030000,
             integrationTier = IntegrationTier.HARDWARE,
             coreId = "flycast",

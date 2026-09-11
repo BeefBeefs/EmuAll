@@ -40,7 +40,8 @@ class EmulationActivity : AppCompatActivity() {
             return
         }
         bindControls()
-        surface.start(coreLibrary, rom, save, filesDir.absolutePath, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
+        val systemDirectory = intent.getStringExtra(EXTRA_SYSTEM_DIRECTORY) ?: filesDir.absolutePath
+        surface.start(coreLibrary, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
@@ -172,13 +173,22 @@ class EmulationActivity : AppCompatActivity() {
         if (id != null) { surface.setButton(id, event.action == KeyEvent.ACTION_DOWN); return true }
         return super.dispatchKeyEvent(event)
     }
-    override fun onDestroy() { surface.stop(); super.onDestroy() }
+    override fun onDestroy() {
+        // Android may destroy/recreate an Activity as part of a configuration
+        // transition even when the manifest handles the common rotation
+        // flags. Stopping the native core here would turn that transient
+        // window teardown into a permanent end-of-emulation. The session is
+        // stopped only when the user actually leaves the emulation screen.
+        if (!isChangingConfigurations) surface.stop()
+        super.onDestroy()
+    }
     companion object {
         const val EXTRA_ROM = "rom"
         const val EXTRA_SAVE = "save"
         const val EXTRA_CORE_LIBRARY = "core_library"
         const val EXTRA_CORE_NAME = "core_name"
         const val EXTRA_SYSTEM_ID = "system_id"
+        const val EXTRA_SYSTEM_DIRECTORY = "system_directory"
         const val EXTRA_AUTO_LOAD = "auto_load"
         const val EXTRA_AUTO_LOAD_SLOT = "auto_load_slot"
     }

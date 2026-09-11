@@ -13,7 +13,7 @@
         android:theme="@style/Theme.EmuAll">
         <activity
             android:name=".EmulationActivity"
-            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:configChanges="colorMode|density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:screenOrientation="unspecified" />
         <activity
             android:name=".MainActivity"

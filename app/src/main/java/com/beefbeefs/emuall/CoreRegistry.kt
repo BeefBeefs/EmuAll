@@ -33,6 +33,7 @@ object CoreRegistry {
         CoreDefinition(
             "ppsspp", "PPSSPP", "libppsspp_libretro_android.so", setOf("psp"),
             preferredVideoBackend = VideoBackend.VULKAN,
+            supportsOpenGlHardware = true,
             requiresHardwareRendering = true,
         ),
         CoreDefinition(
@@ -44,16 +45,19 @@ object CoreRegistry {
         CoreDefinition(
             "flycast", "Flycast", "libflycast_libretro_android.so", setOf("dreamcast"),
             preferredVideoBackend = VideoBackend.VULKAN,
+            supportsOpenGlHardware = true,
             requiresHardwareRendering = true,
         ),
         CoreDefinition(
             "dolphin", "Dolphin", "libdolphin_libretro_android.so", setOf("gamecube"),
             preferredVideoBackend = VideoBackend.VULKAN,
+            supportsOpenGlHardware = true,
             requiresHardwareRendering = true,
         ),
         CoreDefinition(
-            "pcsx2", "PCSX2", "libpcsx2_libretro_android.so", setOf("ps2"),
-            preferredVideoBackend = VideoBackend.VULKAN,
+            "play", "Play!", "libplay_libretro_android.so", setOf("ps2"),
+            preferredVideoBackend = VideoBackend.OPENGL_ES,
+            supportsOpenGlHardware = true,
             requiresHardwareRendering = true,
         ),
     )
@@ -68,7 +72,9 @@ object CoreRegistry {
 
     /** Returns a core only when the current frontend can render it safely. */
     fun playableForSystem(context: android.content.Context, systemId: String): CoreDefinition? {
+        val system = Systems.byId(systemId) ?: return null
         val core = forSystem(systemId) ?: return null
+        if (GraphicsBackendSelector.glesVersion(context) < system.minimumGles) return null
         if (!core.requiresHardwareRendering) return core
         return core.takeIf { GraphicsBackendSelector.canRender(context, core) }
     }

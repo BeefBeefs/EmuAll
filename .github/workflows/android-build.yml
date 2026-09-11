@@ -39,7 +39,7 @@ jobs:
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libemuall_frontend.so'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libmgba_libretro.so'
-          for core in fceumm snes9x genesis_plus_gx pcsx_rearmed ppsspp mupen64plus_next_gles3 flycast dolphin pcsx2; do
+          for core in fceumm snes9x genesis_plus_gx pcsx_rearmed ppsspp mupen64plus_next_gles3 flycast dolphin play; do
             unzip -l app/build/outputs/apk/debug/app-debug.apk | grep "lib/arm64-v8a/lib${core}_libretro_android.so"
           done
           ! unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/x86_64/'

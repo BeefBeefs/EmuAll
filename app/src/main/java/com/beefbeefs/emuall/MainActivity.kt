@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.systemKicker).text = "${system.shortName} · ${system.integrationTier.label.uppercase()}"
         findViewById<TextView>(R.id.systemTitle).text = system.displayName
         val renderer = core?.let { GraphicsBackendSelector.describe(this, it) }
-        val rendererNote = if (core != null && playableCore == null) "\nVulkan hardware-rendering support is staged but not active for this core yet." else ""
+        val rendererNote = if (core != null && playableCore == null) "\nThis core needs a compatible hardware-rendering device." else ""
         val formats = if (system.extensions.isEmpty()) "No Android-compatible core is available yet."
         else "Core: ${core?.displayName ?: system.coreName}\nRenderer: ${renderer ?: "Not bundled"}\nRecognized: ${system.extensions.joinToString { ".$it" }}$rendererNote"
         val bios = if (system.biosRequired) "\nA legally obtained BIOS is required." else ""
@@ -105,7 +105,7 @@ class MainActivity : AppCompatActivity() {
             text = when {
                 core == null -> "Android Core Not Available"
                 !supports(system) -> "GPU Requirements Not Met"
-                playableCore == null -> "Vulkan Renderer Required"
+                playableCore == null -> "Hardware Renderer Unavailable"
                 else -> "Choose ${system.shortName} Game"
             }
             setOnClickListener { openGamePicker() }
@@ -245,7 +245,7 @@ class MainActivity : AppCompatActivity() {
         if (core == null) {
             val registered = CoreRegistry.forSystem(systemId)
             val message = if (registered?.requiresHardwareRendering == true) {
-                "${registered.displayName} needs the Vulkan hardware-rendering frontend before it can launch."
+                "${registered.displayName} needs a compatible hardware-rendering device before it can launch."
             } else {
                 "${registered?.displayName ?: Systems.byId(systemId)?.coreName ?: "This core"} is not integrated yet."
             }
@@ -308,26 +308,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+        val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
+        var selected: File? = null
         ZipInputStream(BufferedInputStream(FileInputStream(source))).use { archive ->
             while (true) {
                 val entry = archive.nextEntry ?: break
                 if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
-                    val output = File(outputDirectory, "${key}_${safeEntryName(entry.name)}")
+                    val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
+                        parentFile?.mkdirs()
+                    }
                     writeLimited(archive, output)
-                    return output
+                    if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
+                        selected = output
+                    }
                 }
             }
         }
+        selected?.let { return it }
         throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the ZIP.")
     }
 
     private fun extractSevenZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+        val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
+        var selected: File? = null
         SevenZFile(source).use { archive ->
             while (true) {
                 val entry = archive.nextEntry ?: break
                 if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
                     require(entry.size <= MAX_ROM_BYTES) { "The selected ROM is too large." }
-                    val output = File(outputDirectory, "${key}_${safeEntryName(entry.name)}")
+                    val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
+                        parentFile?.mkdirs()
+                    }
                     FileOutputStream(output).use { destination ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         var total = 0L
@@ -339,10 +350,13 @@ class MainActivity : AppCompatActivity() {
                             destination.write(buffer, 0, read)
                         }
                     }
-                    return output
+                    if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
+                        selected = output
+                    }
                 }
             }
         }
+        selected?.let { return it }
         throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the 7z archive.")
     }
 
@@ -365,7 +379,18 @@ class MainActivity : AppCompatActivity() {
         return extension in (Systems.byId(systemId)?.extensions ?: emptySet()) && extension !in setOf("zip", "7z")
     }
 
-    private fun safeEntryName(name: String) = name.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._ -]"), "_")
+    /** Keeps disc-image sidecar files next to their descriptor (e.g. GDI + tracks). */
+    private fun safeRelativeEntryName(name: String): String = name
+        .replace('\\', '/')
+        .split('/')
+        .filter { it.isNotBlank() && it != "." && it != ".." }
+        .joinToString("/") { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
+        .ifBlank { "entry" }
+
+    private fun archiveEntryPriority(name: String): Int = when (name.substringAfterLast('.', "").lowercase()) {
+        "gdi", "cue", "m3u", "lst", "elf", "iso", "chd", "cdi", "cso", "pbp", "z64", "n64", "v64" -> 0
+        else -> 1
+    }
 
     private fun displayName(uri: Uri): String {
         contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->

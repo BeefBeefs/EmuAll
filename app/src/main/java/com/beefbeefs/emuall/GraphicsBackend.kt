@@ -26,8 +26,11 @@ object GraphicsBackendSelector {
     }
 
     fun gles3Available(context: Context): Boolean =
+        glesVersion(context) >= 0x00030000
+
+    fun glesVersion(context: Context): Int =
         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager)
-            .deviceConfigurationInfo.reqGlEsVersion >= 0x30000
+            .deviceConfigurationInfo.reqGlEsVersion
 
     fun canRender(context: Context, core: CoreDefinition): Boolean {
         if (!core.requiresHardwareRendering) return true

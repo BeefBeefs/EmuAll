@@ -174,12 +174,17 @@ bool environment(unsigned command, void* data) {
             }
             return true;
         case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
-            return false;
+            // GLES cores may still advertise the negotiation hook for
+            // compatibility. There is no Vulkan negotiation object to expose
+            // here, but accepting the no-op keeps those cores on their GLES
+            // path instead of treating the frontend as unusable.
+            return true;
         case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER:
             return false;
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
         case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
+        case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
         case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
         case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
         case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY:

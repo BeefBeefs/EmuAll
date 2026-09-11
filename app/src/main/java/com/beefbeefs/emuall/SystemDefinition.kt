@@ -50,7 +50,7 @@ object Systems {
             setOf("chd", "cso", "cue", "elf", "iso", "isz"),
             minimumGles = 0x00030002,
             integrationTier = IntegrationTier.HARDWARE,
-            coreId = "pcsx2",
+            coreId = "play",
         ),
         SystemDefinition(
             "gamecube", "GC / WII", "GameCube / Wii", "Dolphin",

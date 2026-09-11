@@ -33,4 +33,5 @@ object NativeCoreBridge {
     external fun saveBattery()
     external fun stop()
     external fun lastError(): String
+    external fun diagnostics(): String
 }

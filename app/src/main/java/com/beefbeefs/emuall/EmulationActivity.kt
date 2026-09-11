@@ -1,6 +1,9 @@
 package com.beefbeefs.emuall
 
 import android.content.res.Configuration
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.Menu
@@ -10,7 +13,10 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.PopupMenu
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 
@@ -96,6 +102,7 @@ class EmulationActivity : AppCompatActivity() {
         findViewById<Button>(R.id.editControlsButton).setOnClickListener {
             if (editingControls) leaveControlEditMode(save = true) else enterControlEditMode()
         }
+        findViewById<TextView>(R.id.sessionStatus).setOnClickListener { showDiagnostics() }
     }
 
     private fun showLaunchError(message: String) {
@@ -108,6 +115,30 @@ class EmulationActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun showDiagnostics() {
+        val report = NativeCoreBridge.diagnostics().ifBlank {
+            "No native diagnostics have been recorded yet."
+        }
+        val text = TextView(this).apply {
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            setTextIsSelectable(true)
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            this.text = report
+        }
+        val scroll = ScrollView(this).apply { addView(text) }
+        AlertDialog.Builder(this)
+            .setTitle("Emulation diagnostics")
+            .setView(scroll)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Copy") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("EmuAll diagnostics", report))
+                Toast.makeText(this, "Diagnostics copied", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -441,7 +472,7 @@ class EmulationActivity : AppCompatActivity() {
         val showL1R1 = isGba || isSnes || isPs1 || isPsp || isGameCube || isPs2
         val showFaceExtra = isSnes || isGenesis || isPs1 || isPsp || isDreamcast || isGameCube || isPs2
         val showZ = isN64 || isGameCube
-        val showL2R2 = isDreamcast || isPs2
+        val showL2R2 = isDreamcast || isPs1 || isPs2
         val showCPad = isN64
         val showSelect = !isGenesis && !isN64 && !isDreamcast && !isGameCube && !isPs2
 
@@ -457,7 +488,10 @@ class EmulationActivity : AppCompatActivity() {
         findViewById<View>(R.id.lButton).visibility = if (showL1R1) View.VISIBLE else View.GONE
         findViewById<View>(R.id.rButton).visibility = if (showL1R1) View.VISIBLE else View.GONE
         findViewById<View>(R.id.shoulderRow).visibility = if (showL1R1) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.faceExtraRow).visibility = if (showFaceExtra) View.VISIBLE else View.GONE
+        val showPlayStationFace = isPs1 || isPsp || isPs2
+        findViewById<View>(R.id.faceRow).visibility = if (showPlayStationFace) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.faceExtraRow).visibility = if (showFaceExtra && !showPlayStationFace) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.playStationFaceButtons).visibility = if (showPlayStationFace) View.VISIBLE else View.GONE
         findViewById<View>(R.id.extraButtonGrid).visibility = if (showZ || showL2R2) View.VISIBLE else View.GONE
         findViewById<View>(R.id.cButtonPad).visibility = if (showCPad) View.VISIBLE else View.GONE
         findViewById<View>(R.id.selectButton).visibility = if (showSelect) View.VISIBLE else View.GONE
@@ -471,14 +505,7 @@ class EmulationActivity : AppCompatActivity() {
         val z = findViewById<Button>(R.id.zButton)
         val l2 = findViewById<Button>(R.id.l2Button)
         val r2 = findViewById<Button>(R.id.r2Button)
-        when {
-            isPs1 || isPsp || isPs2 -> {
-                a.text = "Cross"; b.text = "Circle"; x.text = "Square"; y.text = "Triangle"
-            }
-            else -> {
-                a.text = "A"; b.text = "B"; x.text = "X"; y.text = if (isGenesis) "C" else "Y"
-            }
-        }
+        a.text = "A"; b.text = "B"; x.text = "X"; y.text = if (isGenesis) "C" else "Y"
         l.text = if (isPs1 || isPs2) "L1" else "L"
         r.text = if (isPs1 || isPs2) "R1" else "R"
         z.text = "Z"
@@ -511,6 +538,13 @@ class EmulationActivity : AppCompatActivity() {
             R.id.bButton to ControllerMappingStore.BUTTON_B,
             R.id.xButton to ControllerMappingStore.BUTTON_X,
             R.id.yButton to ControllerMappingStore.BUTTON_Y,
+            // Libretro's PlayStation convention is B=Cross, A=Circle,
+            // Y=Square and X=Triangle. Keep the visible symbols and native
+            // inputs aligned for PCSX-ReARMed, Play! and PPSSPP.
+            R.id.crossButton to ControllerMappingStore.BUTTON_B,
+            R.id.circleButton to ControllerMappingStore.BUTTON_A,
+            R.id.squareButton to ControllerMappingStore.BUTTON_Y,
+            R.id.triangleButton to ControllerMappingStore.BUTTON_X,
             R.id.lButton to ControllerMappingStore.BUTTON_L,
             R.id.rButton to ControllerMappingStore.BUTTON_R,
             R.id.zButton to ControllerMappingStore.BUTTON_L2,

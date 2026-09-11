@@ -16,6 +16,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <typeinfo>
 #include <unordered_map>
@@ -33,6 +34,7 @@ struct CoreApi {
     void (*setAudioBatch)(retro_audio_sample_batch_t){};
     void (*setInputPoll)(retro_input_poll_t){};
     void (*setInputState)(retro_input_state_t){};
+    void (*setControllerPortDevice)(unsigned, unsigned){};
     void (*getSystemInfo)(retro_system_info*){};
     void (*getSystemAvInfo)(retro_system_av_info*){};
     void (*init)(){};
@@ -77,15 +79,30 @@ struct Session {
     std::string lastCoreError;
     std::string graphicsNegotiationError;
     std::mutex logMutex;
+    std::deque<std::string> diagnostics;
     std::unordered_map<std::string, std::string> variables;
     unsigned glesMajor{3};
     unsigned glesMinor{0};
     bool hardwareRendering{};
     bool hardwareContextConfigured{};
     retro_hw_render_callback hardwareCallback{};
+    retro_frame_time_callback frameTimeCallback{};
+    std::atomic<uint64_t> runCalls{0};
+    std::atomic<uint64_t> videoCallbacks{0};
     bool initialized{};
     bool gameLoaded{};
 } g;
+
+void record_diagnostic(const std::string& message) {
+    if (message.empty()) return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard lock(g.logMutex);
+    std::ostringstream line;
+    line << '[' << elapsed << "] " << message;
+    g.diagnostics.push_back(line.str());
+    while (g.diagnostics.size() > 240) g.diagnostics.pop_front();
+}
 
 bool is_core(const char* name) {
     return g.corePath.find(name) != std::string::npos;
@@ -117,6 +134,7 @@ void core_failure(const char* operation, const char* detail) {
         g.lastError += detail;
     }
     __android_log_print(ANDROID_LOG_ERROR, "EmuAllNative", "%s", g.lastError.c_str());
+    record_diagnostic(g.lastError);
 }
 
 template <typename Function>
@@ -158,13 +176,16 @@ void core_log(enum retro_log_level level, const char* format, ...) {
     va_end(copy);
     __android_log_vprint(priority, "EmuAllNative", format, args);
     va_end(args);
-    if (level == RETRO_LOG_ERROR) {
-        std::string clean(message);
-        while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r')) clean.pop_back();
-        if (!clean.empty()) {
-            std::lock_guard lock(g.logMutex);
+    std::string clean(message);
+    while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r')) clean.pop_back();
+    if (!clean.empty()) {
+        std::lock_guard lock(g.logMutex);
+        const char* label = level == RETRO_LOG_ERROR ? "ERROR" :
+            level == RETRO_LOG_WARN ? "WARN" : level == RETRO_LOG_DEBUG ? "DEBUG" : "INFO";
+        g.diagnostics.push_back(std::string("[core ") + label + "] " + clean);
+        while (g.diagnostics.size() > 240) g.diagnostics.pop_front();
+        if (level == RETRO_LOG_ERROR)
             g.lastCoreError = clean;
-        }
     }
 }
 
@@ -212,7 +233,12 @@ retro_perf_tick_t perf_counter() {
     return static_cast<retro_perf_tick_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
-uint64_t perf_cpu_features() { return 0; }
+uint64_t perf_cpu_features() {
+    // EmuAll packages arm64-v8a only. Advanced SIMD/FP is mandatory in
+    // AArch64, so advertising no CPU features needlessly disables optimized
+    // and JIT-adjacent paths in the three most demanding cores.
+    return RETRO_SIMD_NEON | RETRO_SIMD_ASIMD | RETRO_SIMD_VFPV3 | RETRO_SIMD_VFPV4;
+}
 void perf_register(retro_perf_counter* counter) { if (counter) counter->registered = true; }
 void perf_start(retro_perf_counter* counter) {
     if (counter) { counter->start = perf_counter(); ++counter->call_cnt; }
@@ -261,6 +287,7 @@ bool environment(unsigned command, void* data) {
                     ", but Android created " + std::to_string(g.glesMajor) + "." +
                     std::to_string(g.glesMinor);
                 __android_log_print(ANDROID_LOG_WARN, "EmuAllNative", "%s", g.graphicsNegotiationError.c_str());
+                record_diagnostic(g.graphicsNegotiationError);
                 return false;
             }
             __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",
@@ -287,6 +314,10 @@ bool environment(unsigned command, void* data) {
             g.hardwareCallback = *callback;
             g.hardwareContextConfigured = true;
             g.graphicsNegotiationError.clear();
+            record_diagnostic("Accepted hardware context request: type=" +
+                std::to_string(static_cast<int>(callback->context_type)) + " requested=" +
+                std::to_string(callback->version_major) + "." + std::to_string(callback->version_minor) +
+                " actual GLES=" + std::to_string(g.glesMajor) + "." + std::to_string(g.glesMinor));
             return true;
         }
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
@@ -328,7 +359,7 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_GET_LANGUAGE:
             *static_cast<unsigned*>(data) = RETRO_LANGUAGE_ENGLISH; return true;
         case RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION:
-            if (data) *static_cast<unsigned*>(data) = 0;
+            if (data) *static_cast<unsigned*>(data) = 1;
             return true;
         case RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE:
             if (data) *static_cast<float*>(data) = 60.0f;
@@ -340,7 +371,10 @@ bool environment(unsigned command, void* data) {
             if (data) *static_cast<bool*>(data) = false;
             return true;
         case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
-            if (data) *static_cast<bool*>(data) = false;
+            // Android permits executable JIT mappings for native emulator
+            // code. Reporting false forces interpreter-only or failed boot
+            // paths in Play!, Flycast and Dolphin.
+            if (data) *static_cast<bool*>(data) = true;
             return true;
         case RETRO_ENVIRONMENT_GET_PERF_INTERFACE:
             if (!data) return false;
@@ -430,23 +464,46 @@ bool environment(unsigned command, void* data) {
             return false;
         case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER:
             return false;
+        case RETRO_ENVIRONMENT_SET_MESSAGE: {
+            const auto* message = static_cast<const retro_message*>(data);
+            if (message && message->msg) record_diagnostic(std::string("Core message: ") + message->msg);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_MESSAGE_EXT: {
+            const auto* message = static_cast<const retro_message_ext*>(data);
+            if (message && message->msg) record_diagnostic(std::string("Core message: ") + message->msg);
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK:
+            if (!data) return false;
+            g.frameTimeCallback = *static_cast<const retro_frame_time_callback*>(data);
+            record_diagnostic("Registered frame-time callback");
+            return true;
+        case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK:
+        case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK:
+            // Returning true without driving these callbacks makes a core
+            // wait forever for frontend-owned asynchronous audio work.
+            return false;
+        case RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION:
+            if (data) *static_cast<unsigned*>(data) = 0;
+            return true;
+        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
+            return true;
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
         case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
         case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
         case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
         case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY:
-        case RETRO_ENVIRONMENT_SET_MESSAGE:
-        case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:
-        case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK:
         case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
             return true;
         case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
-            // The core and frontend already execute on the one current
-            // GLSurfaceView context. Do not claim a second shared context that
-            // Android never created; cores treat a true response as a real
-            // lifetime/ownership guarantee.
-            return false;
+            // The frontend and core intentionally use the same current EGL
+            // context on the GLSurfaceView thread. This is stronger than two
+            // contexts sharing an object namespace and satisfies Dolphin's
+            // requirement that its output be visible to the frontend.
+            record_diagnostic("Core requested a shared GL context; using the common frontend/core context");
+            return true;
         default:
             __android_log_print(ANDROID_LOG_DEBUG, "EmuAllNative", "Unsupported libretro environment command: %u", command);
             return false;
@@ -454,6 +511,12 @@ bool environment(unsigned command, void* data) {
 }
 
 void video(const void* data, unsigned width, unsigned height, size_t pitch) {
+    const uint64_t count = g.videoCallbacks.fetch_add(1) + 1;
+    if (count == 1) {
+        record_diagnostic(std::string("First video callback: ") +
+            (data == RETRO_HW_FRAME_BUFFER_VALID ? "hardware" : data ? "software" : "duplicate") +
+            " " + std::to_string(width) + "x" + std::to_string(height));
+    }
     if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || !width || !height) return;
     size_t bpp = g.pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888 ? 4 : 2;
     size_t rowBytes = width * bpp;
@@ -513,6 +576,7 @@ bool load_api(const char* path) {
     LOAD("retro_set_video_refresh", setVideoRefresh); LOAD("retro_set_audio_sample", setAudioSample);
     LOAD("retro_set_audio_sample_batch", setAudioBatch); LOAD("retro_set_input_poll", setInputPoll);
     LOAD("retro_set_input_state", setInputState); LOAD("retro_get_system_info", getSystemInfo);
+    LOAD("retro_set_controller_port_device", setControllerPortDevice);
     LOAD("retro_get_system_av_info", getSystemAvInfo); LOAD("retro_init", init);
     LOAD("retro_deinit", deinit); LOAD("retro_load_game", loadGame);
     LOAD("retro_unload_game", unloadGame); LOAD("retro_run", run); LOAD("retro_reset", reset);
@@ -616,6 +680,9 @@ void stop_session() {
     g.analogY[0] = 0; g.analogY[1] = 0;
     g.width = 0; g.height = 0; g.videoAspectRatio = 0.0; g.hardwareFramebuffer = 0; g.hardwareRendering = false;
     g.hardwareContextConfigured = false; g.hardwareCallback = {};
+    g.frameTimeCallback = {};
+    g.runCalls = 0;
+    g.videoCallbacks = 0;
     // Cleanup can itself call into a partially initialized core.  Do not let
     // a secondary teardown error hide the startup/run failure the user needs.
     if (!failure.empty()) g.lastError = failure;
@@ -653,6 +720,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     {
         std::lock_guard lock(g.logMutex);
         g.lastCoreError.clear();
+        g.diagnostics.clear();
     }
     g.hardwareRendering = hardwareRendering == JNI_TRUE;
     g.savePath = from_java(env, savePath); g.systemDirectory = from_java(env, systemDirectory);
@@ -666,10 +734,15 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     if (!g.systemDirectory.empty()) setenv("EXTERNAL_STORAGE", g.systemDirectory.c_str(), 1);
     __android_log_print(ANDROID_LOG_INFO, "EmuAllNative", "Starting core=%s rom=%s hardware=%d system=%s",
         core.c_str(), romPathValue.c_str(), g.hardwareRendering ? 1 : 0, g.systemDirectory.c_str());
+    record_diagnostic("Start requested: core=" + core + " content=" + romPathValue +
+        " system=" + g.systemDirectory + " hardware=" + (g.hardwareRendering ? "yes" : "no"));
+    record_diagnostic("Frontend framebuffer=" + std::to_string(g.hardwareFramebuffer) +
+        " GLES=" + std::to_string(g.glesMajor) + "." + std::to_string(g.glesMinor));
     if (!load_api(core.c_str())) {
         stop_session();
         return false;
     }
+    record_diagnostic("Loaded libretro API symbols");
     g.api.setEnvironment(environment); g.api.setVideoRefresh(video);
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);
@@ -678,6 +751,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         return false;
     }
     g.initialized = true;
+    record_diagnostic("retro_init completed");
     // Some cores request hardware rendering from retro_init(), while others
     // (including Mupen64Plus-Next) do it from retro_load_game().  Reset any
     // context negotiated during init, then repeat the handshake after
@@ -693,6 +767,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         stop_session();
         return false;
     }
+    record_diagnostic("System info: library=" + std::string(systemInfo.library_name ? systemInfo.library_name : "unknown") +
+        " version=" + std::string(systemInfo.library_version ? systemInfo.library_version : "unknown") +
+        " need_fullpath=" + (systemInfo.need_fullpath ? "yes" : "no") +
+        " extensions=" + std::string(systemInfo.valid_extensions ? systemInfo.valid_extensions : ""));
     // Disc-based cores (Dolphin, Flycast and several PSP builds) set
     // need_fullpath because they stream large images from disk. Reading a
     // 1.3 GB GameCube ISO into g.rom first can exhaust a phone's heap and
@@ -710,6 +788,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = useFilesystemPath ? nullptr : g.rom.data();
     game.size = useFilesystemPath ? 0 : g.rom.size();
+    record_diagnostic("Calling retro_load_game with " + std::string(useFilesystemPath ? "filesystem path" : "memory buffer"));
     if (!call_core_bool("retro_load_game", [&] { return g.api.loadGame(&game); })) {
         if (g.lastError.empty()) {
             std::lock_guard lock(g.logMutex);
@@ -720,6 +799,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         stop_session();
         return false;
     }
+    record_diagnostic("retro_load_game accepted content");
+    call_core_void("retro_set_controller_port_device", [&] {
+        g.api.setControllerPortDevice(0, RETRO_DEVICE_JOYPAD);
+    });
     if (g.hardwareRendering) {
         if (!g.hardwareContextConfigured || !g.hardwareCallback.context_reset) {
             g.lastError = g.graphicsNegotiationError.empty()
@@ -732,6 +815,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
             stop_session();
             return false;
         }
+        record_diagnostic("Hardware context reset completed");
     }
     g.gameLoaded = true;
     retro_system_av_info av{};
@@ -743,6 +827,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     g.videoAspectRatio = av.geometry.aspect_ratio > 0.0
         ? av.geometry.aspect_ratio
         : (av.geometry.base_height ? static_cast<double>(av.geometry.base_width) / av.geometry.base_height : 0.0);
+    record_diagnostic("AV info: " + std::to_string(av.geometry.base_width) + "x" +
+        std::to_string(av.geometry.base_height) + " max=" + std::to_string(av.geometry.max_width) + "x" +
+        std::to_string(av.geometry.max_height) + " fps=" + std::to_string(g.fps) +
+        " sample_rate=" + std::to_string(g.sampleRate));
     std::vector<uint8_t> save;
     if (read_file(g.savePath, save)) {
         call_core_void("restore battery save", [&] {
@@ -779,7 +867,20 @@ extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_set
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) {
     if (!g.gameLoaded) return JNI_FALSE;
-    if (call_core_void("retro_run", [&] { g.api.run(); })) return JNI_TRUE;
+    const uint64_t runNumber = g.runCalls.fetch_add(1) + 1;
+    if (runNumber == 1) record_diagnostic("Entering first retro_run");
+    if (g.frameTimeCallback.callback && !call_core_void("frame time callback", [&] {
+        g.frameTimeCallback.callback(g.frameTimeCallback.reference > 0
+            ? g.frameTimeCallback.reference
+            : static_cast<retro_usec_t>(1000000.0 / std::max(1.0, g.fps)));
+    })) {
+        stop_session();
+        return JNI_FALSE;
+    }
+    if (call_core_void("retro_run", [&] { g.api.run(); })) {
+        if (runNumber == 1) record_diagnostic("First retro_run completed");
+        return JNI_TRUE;
+    }
     // A C++ exception escaping a core callback must not leave the frontend
     // driving a half-torn-down core on the next frame. Keep this cleanup on
     // the same GL/emulation thread that invoked retro_run().
@@ -840,4 +941,17 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_
     if (!g.lastError.empty()) return env->NewStringUTF(g.lastError.c_str());
     std::lock_guard lock(g.logMutex);
     return env->NewStringUTF(g.lastCoreError.c_str());
+}
+extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_diagnostics(JNIEnv* env, jobject) {
+    std::lock_guard lock(g.logMutex);
+    std::string report;
+    for (const auto& line : g.diagnostics) {
+        if (!report.empty()) report += '\n';
+        report += line;
+    }
+    if (!g.lastError.empty()) {
+        if (!report.empty()) report += "\n\n";
+        report += "Last frontend error: " + g.lastError;
+    }
+    return env->NewStringUTF(report.c_str());
 }

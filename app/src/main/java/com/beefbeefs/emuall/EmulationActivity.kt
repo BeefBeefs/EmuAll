@@ -19,6 +19,10 @@ class EmulationActivity : AppCompatActivity() {
     private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
     private var landscapeLeft: LinearLayout? = null
     private var landscapeRight: LinearLayout? = null
+    // Rotation can destroy/recreate a window while Android reports the old
+    // Activity as finishing. Only an explicit user exit is allowed to stop
+    // the native session; configuration changes must leave it alive.
+    private var explicitExit = false
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); setContentView(R.layout.activity_emulation)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -45,7 +49,10 @@ class EmulationActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
-        findViewById<Button>(R.id.menuButton).setOnClickListener { finish() }
+        findViewById<Button>(R.id.menuButton).setOnClickListener {
+            explicitExit = true
+            finish()
+        }
         findViewById<Button>(R.id.pauseButton).setOnClickListener { button ->
             surface.setPaused(!surface.isPaused()); (button as Button).text = if (surface.isPaused()) "Resume" else "Pause"
         }
@@ -173,17 +180,18 @@ class EmulationActivity : AppCompatActivity() {
         if (id != null) { surface.setButton(id, event.action == KeyEvent.ACTION_DOWN); return true }
         return super.dispatchKeyEvent(event)
     }
+
+    @Deprecated("Use the system back dispatcher in a future Activity Result migration")
+    override fun onBackPressed() {
+        explicitExit = true
+        super.onBackPressed()
+    }
+
     override fun onDestroy() {
-        // Android may destroy/recreate an Activity as part of a configuration
-        // transition even when the manifest handles the common rotation
-        // flags. Stopping the native core here would turn that transient
-        // window teardown into a permanent end-of-emulation. The session is
-        // stopped only when the user actually leaves the emulation screen.
-        // A configuration transition can still report isChangingConfigurations
-        // as false on some Android window-manager paths. Only stop when this
-        // Activity is actually finishing; otherwise the native session must
-        // remain available to the new orientation/window.
-        if (isFinishing && !isChangingConfigurations) surface.stop()
+        // Do not infer an emulation exit from Activity destruction. During a
+        // rotation Android may tear down the old window and report it as
+        // finishing even though the user is still in the same session.
+        if (explicitExit) surface.stop()
         super.onDestroy()
     }
     companion object {

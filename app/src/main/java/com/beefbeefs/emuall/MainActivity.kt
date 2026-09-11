@@ -21,6 +21,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import java.text.DateFormat
 import java.util.Date
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var recentStore: RecentGameStore
@@ -143,7 +144,8 @@ class MainActivity : AppCompatActivity() {
         }
         recentStore.add(RecentGame(system.id, name, uri, System.currentTimeMillis()))
         populateRecents()
-        Toast.makeText(this, "$name added. ${system.coreName} integration is the next native milestone.", Toast.LENGTH_LONG).show()
+        if (system.id == "gba" && extension == "gba") launchGame(uri, name)
+        else Toast.makeText(this, "$name added. ${system.coreName} integration is queued after mGBA.", Toast.LENGTH_LONG).show()
     }
 
     private fun populateRecents() {
@@ -166,7 +168,7 @@ class MainActivity : AppCompatActivity() {
                 addView(label("${system.shortName} · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(game.playedAt))}", 11f, R.color.text_muted, false).apply {
                     setPadding(0, dp(4), 0, 0)
                 })
-                setOnClickListener { showSystem(system) }
+                setOnClickListener { if (system.id == "gba") launchGame(game.uri, game.name) else showSystem(system) }
             }
             recentSection.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(9)
@@ -179,6 +181,30 @@ class MainActivity : AppCompatActivity() {
             if (cursor.moveToFirst()) return cursor.getString(0)
         }
         return uri.lastPathSegment ?: "game"
+    }
+
+    private fun launchGame(uri: Uri, name: String) {
+        Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()
+        Thread {
+            runCatching {
+                val romDirectory = File(filesDir, "roms/gba").apply { mkdirs() }
+                val saveDirectory = File(filesDir, "saves/gba").apply { mkdirs() }
+                val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                val key = uri.toString().hashCode().toUInt().toString(16)
+                val rom = File(romDirectory, "${key}_$safeName")
+                contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "Android could not open this game." }
+                    rom.outputStream().use { output -> input.copyTo(output) }
+                }
+                val save = File(saveDirectory, "${safeName.substringBeforeLast('.')}_$key.sav")
+                runOnUiThread {
+                    startActivity(Intent(this, EmulationActivity::class.java).apply {
+                        putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
+                        putExtra(EmulationActivity.EXTRA_SAVE, save.absolutePath)
+                    })
+                }
+            }.onFailure { error -> runOnUiThread { Toast.makeText(this, error.message ?: "Could not prepare game.", Toast.LENGTH_LONG).show() } }
+        }.start()
     }
 
     private fun label(text: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {

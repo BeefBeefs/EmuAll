@@ -57,7 +57,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="NATIVE ENGINE · BUILD 1"
+                    android:text="NATIVE ENGINE · BUILD 2"
                     android:textColor="@color/accent"
                     android:textSize="12sp"
                     android:textStyle="bold" />

@@ -2,7 +2,7 @@
 
 EmuAll is an Android-native multi-system emulator frontend inspired by the emulator portion of PixelPalette/PixelPlayer. It does not use a WebView or JavaScript emulator runtime.
 
-## Build 1
+## Build 2
 
 - Native Kotlin Android UI using the PixelPlayer dark green/orange visual language
 - Extensible system catalog: the original GBA-through-Saturn lineup plus Dreamcast/NAOMI, PS2, GameCube/Wii, and a guarded future Xbox entry
@@ -13,7 +13,11 @@ EmuAll is an Android-native multi-system emulator frontend inspired by the emula
 - C++/JNI frontend library with a safe libretro API compatibility probe
 - Only `arm64-v8a` and `x86_64` ABIs, keeping modern phones and Android emulators covered without legacy APK bloat
 
-No ROMs, BIOS files, firmware, copyrighted game assets, or emulator core binaries are included.
+No ROMs, BIOS files, firmware, or copyrighted game assets are included. The APK builds the open-source mGBA core from its pinned source submodule.
+
+Build 2 adds the first playable native core: mGBA. Raw `.gba` games launch with native video/audio, touch controls, physical gamepad input, pause, reset, 3× fast-forward, and automatic battery-save persistence. Archive extraction remains a later shared-core milestone.
+
+Vulkan is the preferred backend for hardware-rendered cores. OpenGL ES is retained as an automatic compatibility fallback and for cores that do not offer Vulkan. mGBA produces software-rendered frames, so its first implementation uploads those frames through the lightweight OpenGL ES fallback path; it does not expose its own Vulkan renderer.
 
 ## Architecture
 

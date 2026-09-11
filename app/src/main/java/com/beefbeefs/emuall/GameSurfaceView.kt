@@ -334,7 +334,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     private fun statePath(savePath: String, slot: Int) = if (slot == 1) "$savePath.quick.state" else "$savePath.state.$slot"
 
-    private class GameRenderer : Renderer {
+    private inner class GameRenderer : Renderer {
         private val frame = ByteBuffer.allocateDirect(1024 * 1024 * 4).order(ByteOrder.nativeOrder())
         private val vertices: FloatBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f)); position(0)

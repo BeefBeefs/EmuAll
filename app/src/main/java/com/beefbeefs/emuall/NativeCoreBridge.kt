@@ -18,6 +18,8 @@ object NativeCoreBridge {
     external fun framesPerSecond(): Double
     external fun setInputMask(mask: Int)
     external fun reset()
+    external fun quickSave(path: String): Boolean
+    external fun quickLoad(path: String): Boolean
     external fun saveBattery()
     external fun stop()
     external fun lastError(): String

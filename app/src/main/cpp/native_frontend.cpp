@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -33,6 +34,9 @@ struct CoreApi {
     void (*unloadGame)(){};
     void (*run)(){};
     void (*reset)(){};
+    size_t (*serializeSize)(){};
+    bool (*serialize)(void*, size_t){};
+    bool (*unserialize)(const void*, size_t){};
     void* (*memoryData)(unsigned){};
     size_t (*memorySize)(unsigned){};
 };
@@ -179,6 +183,8 @@ bool load_api(const char* path) {
     LOAD("retro_get_system_av_info", getSystemAvInfo); LOAD("retro_init", init);
     LOAD("retro_deinit", deinit); LOAD("retro_load_game", loadGame);
     LOAD("retro_unload_game", unloadGame); LOAD("retro_run", run); LOAD("retro_reset", reset);
+    LOAD("retro_serialize_size", serializeSize); LOAD("retro_serialize", serialize);
+    LOAD("retro_unserialize", unserialize);
     LOAD("retro_get_memory_data", memoryData); LOAD("retro_get_memory_size", memorySize);
 #undef LOAD
     if (g.api.apiVersion() != RETRO_API_VERSION) { g.lastError = "Unsupported libretro API"; return false; }
@@ -201,6 +207,40 @@ void save_battery() {
     if (!size || !data) return;
     std::ofstream output(g.savePath, std::ios::binary | std::ios::trunc);
     output.write(static_cast<char*>(data), static_cast<std::streamsize>(size));
+}
+
+bool quick_save(const std::string& path) {
+    if (!g.gameLoaded) { g.lastError = "No game is running"; return false; }
+    size_t size = g.api.serializeSize();
+    if (!size) { g.lastError = "This core does not support save states"; return false; }
+    std::vector<uint8_t> state(size);
+    if (!g.api.serialize(state.data(), state.size())) {
+        g.lastError = "mGBA could not create a save state";
+        return false;
+    }
+    std::string temporaryPath = path + ".tmp";
+    std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(state.data()), static_cast<std::streamsize>(state.size()));
+    output.close();
+    if (!output || std::rename(temporaryPath.c_str(), path.c_str()) != 0) {
+        std::remove(temporaryPath.c_str());
+        g.lastError = "Could not write the quick save";
+        return false;
+    }
+    return true;
+}
+
+bool quick_load(const std::string& path) {
+    if (!g.gameLoaded) { g.lastError = "No game is running"; return false; }
+    std::vector<uint8_t> state;
+    if (!read_file(path, state)) { g.lastError = "No quick save exists for this game"; return false; }
+    if (!g.api.unserialize(state.data(), state.size())) {
+        g.lastError = "This quick save is not compatible with the current core";
+        return false;
+    }
+    std::lock_guard lock(g.audioMutex);
+    g.audio.clear();
+    return true;
 }
 
 void stop_session() {
@@ -281,6 +321,12 @@ extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_sam
 extern "C" JNIEXPORT jdouble JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_framesPerSecond(JNIEnv*, jobject) { return g.fps; }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setInputMask(JNIEnv*, jobject, jint mask) { g.inputMask = static_cast<uint32_t>(mask); }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_reset(JNIEnv*, jobject) { if (g.gameLoaded) g.api.reset(); }
+extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_quickSave(JNIEnv* env, jobject, jstring path) {
+    return quick_save(from_java(env, path));
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_quickLoad(JNIEnv* env, jobject, jstring path) {
+    return quick_load(from_java(env, path));
+}
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_saveBattery(JNIEnv*, jobject) { save_battery(); }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_stop(JNIEnv*, jobject) { stop_session(); }
 extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_lastError(JNIEnv* env, jobject) { return env->NewStringUTF(g.lastError.c_str()); }

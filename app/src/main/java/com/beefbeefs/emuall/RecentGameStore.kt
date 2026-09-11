@@ -37,6 +37,8 @@ class RecentGameStore(context: Context) {
         }
     }.getOrDefault(emptyList())
 
+    fun remove(uri: Uri) = save(load().filterNot { it.uri == uri })
+
     private fun save(games: List<RecentGame>) {
         val data = JSONArray()
         games.forEach { game ->

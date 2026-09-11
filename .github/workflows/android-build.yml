@@ -35,6 +35,7 @@ jobs:
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libemuall_frontend.so'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libmgba_libretro.so'
+          ! unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/x86_64/'
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4

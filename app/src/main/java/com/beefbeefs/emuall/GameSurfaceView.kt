@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.graphics.Bitmap
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.os.Process
@@ -11,6 +12,8 @@ import android.util.AttributeSet
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.microedition.khronos.egl.EGLConfig
@@ -22,6 +25,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private val running = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
     private val speed = AtomicInteger(1)
+    private val pendingAction = AtomicInteger(ACTION_NONE)
     private var emulationThread: Thread? = null
     private var inputMask = 0
 
@@ -71,12 +75,37 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             }
             post { onStatus("mGBA · Starting · target ${"%.1f".format(coreFps)} FPS") }
             val baseFrameNanos = (1_000_000_000.0 / coreFps).toLong()
+            val quickStatePath = "$savePath.quick.state"
             var deadline = System.nanoTime()
             var measurementStart = deadline
             var measuredFrames = 0
             var lastSave = deadline
+            var transientStatusUntil = 0L
             try {
                 while (running.get()) {
+                    val action = pendingAction.getAndSet(ACTION_NONE)
+                    if (action != ACTION_NONE) {
+                        val message = when (action) {
+                            ACTION_RESET -> {
+                                NativeCoreBridge.reset()
+                                NativeCoreBridge.runFrame()
+                                requestRender()
+                                "Game reset"
+                            }
+                            ACTION_QUICK_SAVE -> if (NativeCoreBridge.quickSave(quickStatePath)) {
+                                captureStateThumbnail("$quickStatePath.png")
+                                "Quick save created"
+                            } else NativeCoreBridge.lastError()
+                            ACTION_QUICK_LOAD -> if (NativeCoreBridge.quickLoad(quickStatePath)) {
+                                NativeCoreBridge.runFrame()
+                                requestRender()
+                                "Quick save loaded"
+                            } else NativeCoreBridge.lastError()
+                            else -> ""
+                        }
+                        transientStatusUntil = System.nanoTime() + 2_000_000_000L
+                        post { onStatus(message) }
+                    }
                     if (paused.get()) {
                         Thread.sleep(12)
                         deadline = System.nanoTime()
@@ -92,7 +121,9 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                     if (measurementNanos >= 1_000_000_000L) {
                         val actualFps = measuredFrames * 1_000_000_000.0 / measurementNanos
                         val mode = if (speed.get() > 1) " · ${speed.get()}×" else ""
-                        post { onStatus("mGBA · ${"%.1f".format(actualFps)} FPS$mode") }
+                        if (now >= transientStatusUntil) {
+                            post { onStatus("mGBA · ${"%.1f".format(actualFps)} FPS$mode") }
+                        }
                         measurementStart = now
                         measuredFrames = 0
                     }
@@ -137,10 +168,26 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         null
     }
 
+    private fun captureStateThumbnail(path: String): Boolean = runCatching {
+        val width = NativeCoreBridge.frameWidth()
+        val height = NativeCoreBridge.frameHeight()
+        if (width <= 0 || height <= 0 || NativeCoreBridge.pixelFormat() != 0) return@runCatching false
+        val pixels = ByteBuffer.allocateDirect(width * height * 2).order(ByteOrder.nativeOrder())
+        if (NativeCoreBridge.copyFrame(pixels) <= 0) return@runCatching false
+        pixels.position(0)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+        bitmap.copyPixelsFromBuffer(pixels)
+        FileOutputStream(File(path)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        true
+    }.getOrDefault(false)
+
     fun setPaused(value: Boolean) = paused.set(value)
     fun isPaused() = paused.get()
     fun toggleFastForward(): Boolean { val enabled = speed.get() == 1; speed.set(if (enabled) 3 else 1); return enabled }
-    fun resetGame() = NativeCoreBridge.reset()
+    fun resetGame() = pendingAction.set(ACTION_RESET)
+    fun quickSave() = pendingAction.set(ACTION_QUICK_SAVE)
+    fun quickLoad() = pendingAction.set(ACTION_QUICK_LOAD)
     fun setButton(id: Int, down: Boolean) = synchronized(this) {
         inputMask = if (down) inputMask or (1 shl id) else inputMask and (1 shl id).inv()
         NativeCoreBridge.setInputMask(inputMask)
@@ -201,5 +248,12 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
         private fun shader(type: Int, code: String) = GLES20.glCreateShader(type).also { GLES20.glShaderSource(it, code); GLES20.glCompileShader(it) }
+    }
+
+    private companion object {
+        const val ACTION_NONE = 0
+        const val ACTION_RESET = 1
+        const val ACTION_QUICK_SAVE = 2
+        const val ACTION_QUICK_LOAD = 3
     }
 }

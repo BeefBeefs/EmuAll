@@ -2,7 +2,7 @@
 
 EmuAll is an Android-native multi-system emulator frontend inspired by the emulator portion of PixelPalette/PixelPlayer. It does not use a WebView or JavaScript emulator runtime.
 
-## Build 4
+## Build 5
 
 - Native Kotlin Android UI using the PixelPlayer dark green/orange visual language
 - Extensible system catalog: the original GBA-through-Saturn lineup plus Dreamcast/NAOMI, PS2, GameCube/Wii, and a guarded future Xbox entry
@@ -11,7 +11,7 @@ EmuAll is an Android-native multi-system emulator frontend inspired by the emula
 - Six recent games per system, stored locally with persistent Android document permissions
 - OpenGL ES `GLSurfaceView` ready for native video frames
 - C++/JNI frontend library with a safe libretro API compatibility probe
-- Only `arm64-v8a` and `x86_64` ABIs, keeping modern phones and Android emulators covered without legacy APK bloat
+- ARM64-only APK for modern physical Android phones, avoiding unused desktop-emulator binaries
 
 No ROMs, BIOS files, firmware, or copyrighted game assets are included. The APK builds the open-source mGBA core from its pinned source submodule.
 
@@ -20,6 +20,8 @@ Build 2 adds the first playable native core: mGBA. Raw `.gba` games launch with 
 Build 3 corrects Android native-library loading by packaging mGBA as `libmgba_libretro.so`, loading it through Android's native library namespace, and attaching the frontend by soname instead of assuming the APK extracted the core to a filesystem path.
 
 Build 4 restores full-speed emulation in the installable debug APK by explicitly optimizing the native mGBA target. Audio output now runs independently from the emulation clock, video textures are reused between frames, and the session header reports measured FPS for device testing.
+
+Build 5 adds persistent per-game Quick Save and Quick Load controls to the session toolbar. Save-state commands are executed safely between emulated frames, including while paused, and the Android package now contains only the `arm64-v8a` binaries needed by the target phone. In landscape, the virtual controls move beside the game so the shorter screen dimension enlarges the viewport instead of collapsing it. The launcher now mirrors PixelPlayer's compact system dropdown and system-specific workspace, with separate recent-game and screenshot-backed quick-state cards.
 
 Vulkan is the preferred backend for hardware-rendered cores. OpenGL ES is retained as an automatic compatibility fallback and for cores that do not offer Vulkan. mGBA produces software-rendered frames, so its first implementation uploads those frames through the lightweight OpenGL ES fallback path; it does not expose its own Vulkan renderer.
 

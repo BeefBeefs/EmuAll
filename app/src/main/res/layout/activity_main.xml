@@ -7,8 +7,8 @@
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true"
-        android:clipToPadding="false">
+        android:clipToPadding="false"
+        android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -22,11 +22,11 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:letterSpacing="0.16"
                 android:text="ANDROID NATIVE EMULATION"
                 android:textColor="@color/accent"
                 android:textSize="11sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.16" />
+                android:textStyle="bold" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -41,10 +41,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
+                android:lineSpacingExtra="3dp"
                 android:text="Your games. One native player. Everything stays on this device."
                 android:textColor="@color/text_muted"
-                android:textSize="15sp"
-                android:lineSpacingExtra="3dp" />
+                android:textSize="15sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -57,7 +57,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="NATIVE ENGINE · BUILD 3"
+                    android:text="NATIVE ENGINE · BUILD 5"
                     android:textColor="@color/accent"
                     android:textSize="12sp"
                     android:textStyle="bold" />
@@ -76,30 +76,74 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
-                android:text="CHOOSE A SYSTEM"
+                android:text="SYSTEM"
                 android:textColor="@color/text_primary"
                 android:textSize="17sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="The complete PixelPlayer console lineup"
-                android:textColor="@color/text_muted"
-                android:textSize="12sp" />
+            <Spinner
+                android:id="@+id/systemSelector"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/panel_accent"
+                android:contentDescription="Choose emulation system"
+                android:paddingHorizontal="12dp"
+                android:popupBackground="@color/panel_raised" />
 
-            <GridLayout
-                android:id="@+id/systemGrid"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:columnCount="2"
-                android:alignmentMode="alignMargins"
-                android:useDefaultMargins="false" />
+                android:layout_marginTop="14dp"
+                android:background="@drawable/panel"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/systemKicker"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/accent"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/systemTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="@color/text_primary"
+                    android:textSize="27sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/systemDetails"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="7dp"
+                    android:lineSpacingExtra="2dp"
+                    android:textColor="@color/text_muted"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/chooseGameButton"
+                    style="@style/EmuButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/button_primary"
+                    android:text="Choose Game" />
+            </LinearLayout>
 
             <LinearLayout
                 android:id="@+id/recentSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="vertical" />
+
+            <LinearLayout
+                android:id="@+id/stateSection"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"

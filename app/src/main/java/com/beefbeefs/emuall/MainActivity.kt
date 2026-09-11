@@ -2,31 +2,33 @@ package com.beefbeefs.emuall
 
 import android.app.Activity
 import android.app.ActivityManager
-import android.app.Dialog
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Gravity
-import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
-import android.view.Window
+import android.widget.AdapterView
+import android.widget.BaseAdapter
 import android.widget.Button
-import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private lateinit var recentStore: RecentGameStore
     private lateinit var recentSection: LinearLayout
-    private var pendingSystem: SystemDefinition? = null
+    private lateinit var stateSection: LinearLayout
+    private var selectedSystem = Systems.all.first()
     private val deviceGlesVersion by lazy {
         (getSystemService(ACTIVITY_SERVICE) as ActivityManager).deviceConfigurationInfo.reqGlEsVersion
     }
@@ -36,85 +38,50 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         recentStore = RecentGameStore(this)
         recentSection = findViewById(R.id.recentSection)
-
-        val nativeStatus = findViewById<TextView>(R.id.nativeStatus)
-        nativeStatus.text = runCatching {
-            "${NativeCoreBridge.frontendVersion()} · OpenGL ES renderer ready"
+        stateSection = findViewById(R.id.stateSection)
+        findViewById<TextView>(R.id.nativeStatus).text = runCatching {
+            "${NativeCoreBridge.frontendVersion()} · OpenGL ES fallback ready"
         }.getOrElse { "Native frontend could not load: ${it.javaClass.simpleName}" }
-
-        populateSystems(findViewById(R.id.systemGrid))
-        populateRecents()
+        setupSystemSelector()
     }
 
-    private fun populateSystems(grid: GridLayout) {
-        Systems.all.forEachIndexed { index, system ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(14), dp(12), dp(14))
-                background = getDrawable(R.drawable.panel)
-                isClickable = true
-                isFocusable = true
-                foreground = selectableItemBackground()
-                contentDescription = "Open ${system.displayName}"
-                addView(label(system.shortName, 17f, R.color.text_primary, true))
-                addView(label(system.coreName, 11f, R.color.text_muted, false).apply {
-                    setPadding(0, dp(5), 0, 0)
-                })
-                addView(label(system.integrationTier.label, 10f, if (supports(system)) R.color.accent else R.color.orange, false).apply {
-                    setPadding(0, dp(4), 0, 0)
-                })
-                setOnClickListener { showSystem(system) }
+    override fun onResume() {
+        super.onResume()
+        if (::recentStore.isInitialized) renderSystemPage()
+    }
+
+    private fun setupSystemSelector() {
+        findViewById<Spinner>(R.id.systemSelector).apply {
+            adapter = SystemAdapter()
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    selectedSystem = Systems.all[position]
+                    renderSystemPage()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
-            val params = GridLayout.LayoutParams(
-                GridLayout.spec(index / 2, 1f),
-                GridLayout.spec(index % 2, 1f),
-            ).apply {
-                width = 0
-                height = dp(92)
-                setMargins(if (index % 2 == 0) 0 else dp(5), dp(5), if (index % 2 == 0) dp(5) else 0, dp(5))
-            }
-            grid.addView(card, params)
         }
     }
 
-    private fun showSystem(system: SystemDefinition) {
-        val dialog = Dialog(this)
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_system, null)
-        view.findViewById<TextView>(R.id.systemKicker).text = "${system.shortName} · NATIVE CORE"
-        view.findViewById<TextView>(R.id.systemTitle).text = system.displayName
-        view.findViewById<TextView>(R.id.coreName).text = system.coreName
+    private fun renderSystemPage() {
+        val system = selectedSystem
+        findViewById<TextView>(R.id.systemKicker).text = "${system.shortName} · ${system.integrationTier.label.uppercase()}"
+        findViewById<TextView>(R.id.systemTitle).text = system.displayName
+        val formats = if (system.extensions.isEmpty()) "No Android-compatible core is available yet."
+        else "Core: ${system.coreName}\nRecognized: ${system.extensions.joinToString { ".$it" }}"
         val bios = if (system.biosRequired) "\nA legally obtained BIOS is required." else ""
-        val hardware = if (system.minimumGles > 0x00020000) {
-            "\nRequires OpenGL ES ${glesName(system.minimumGles)} or a future Vulkan backend."
-        } else ""
-        val unavailable = if (system.integrationTier == IntegrationTier.FUTURE) {
-            "\nThis system will activate only after a usable Android core is validated."
-        } else ""
-        view.findViewById<TextView>(R.id.systemFormats).text =
-            if (system.extensions.isEmpty()) "$unavailable$hardware" else
-                "Recognized files: ${system.extensions.joinToString { ".$it" }}$bios$hardware$unavailable"
-        val chooseButton = view.findViewById<Button>(R.id.chooseGameButton)
-        chooseButton.isEnabled = supports(system) && system.integrationTier != IntegrationTier.FUTURE
-        chooseButton.text = when {
-            system.integrationTier == IntegrationTier.FUTURE -> "Android Core Not Yet Available"
-            !supports(system) -> "Requires OpenGL ES ${glesName(system.minimumGles)}"
-            else -> "Choose Game"
+        findViewById<TextView>(R.id.systemDetails).text = formats + bios
+        findViewById<Button>(R.id.chooseGameButton).apply {
+            isEnabled = supports(system) && system.integrationTier != IntegrationTier.FUTURE
+            text = when {
+                system.integrationTier == IntegrationTier.FUTURE -> "Android Core Not Available"
+                !supports(system) -> "GPU Requirements Not Met"
+                else -> "Choose ${system.shortName} Game"
+            }
+            setOnClickListener { openGamePicker() }
         }
-        chooseButton.setOnClickListener {
-            pendingSystem = system
-            dialog.dismiss()
-            openGamePicker()
-        }
-        view.findViewById<Button>(R.id.cancelButton).setOnClickListener { dialog.dismiss() }
-        dialog.setContentView(view)
-        dialog.window?.apply {
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setLayout((resources.displayMetrics.widthPixels * .92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
-        }
-        dialog.show()
-        dialog.window?.setLayout((resources.displayMetrics.widthPixels * .92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+        renderRecents()
+        renderStates()
     }
 
     private fun openGamePicker() {
@@ -132,48 +99,126 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != PICK_GAME || resultCode != Activity.RESULT_OK) return
         val uri = data?.data ?: return
-        val system = pendingSystem ?: return
+        val system = selectedSystem
         val name = displayName(uri)
         val extension = name.substringAfterLast('.', "").lowercase()
         if (extension !in system.extensions) {
             Toast.makeText(this, "$name is not recognized as a ${system.shortName} game.", Toast.LENGTH_LONG).show()
             return
         }
-        runCatching {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
+        runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         recentStore.add(RecentGame(system.id, name, uri, System.currentTimeMillis()))
-        populateRecents()
+        renderSystemPage()
         if (system.id == "gba" && extension == "gba") launchGame(uri, name)
-        else Toast.makeText(this, "$name added. ${system.coreName} integration is queued after mGBA.", Toast.LENGTH_LONG).show()
+        else Toast.makeText(this, "$name added. ${system.coreName} integration is not playable yet.", Toast.LENGTH_LONG).show()
     }
 
-    private fun populateRecents() {
+    private fun renderRecents() {
         recentSection.removeAllViews()
-        val games = recentStore.load()
-        recentSection.addView(label("RECENTLY PLAYED", 17f, R.color.text_primary, true))
+        val games = recentStore.load().filter { it.systemId == selectedSystem.id }
+        recentSection.addView(sectionHeading("RECENTLY PLAYED", "${games.size} GAMES"))
         if (games.isEmpty()) {
-            recentSection.addView(label("Games you choose will appear here per system.", 13f, R.color.text_muted, false).apply {
-                setPadding(0, dp(10), 0, dp(10))
-            })
+            recentSection.addView(emptyCard("No recent ${selectedSystem.shortName} games yet."))
             return
         }
         games.forEach { game ->
-            val system = Systems.byId(game.systemId) ?: return@forEach
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(14), dp(12), dp(14), dp(12))
+                setPadding(dp(14), dp(12), dp(12), dp(12))
                 background = getDrawable(R.drawable.panel)
-                addView(label(game.name, 14f, R.color.text_primary, true))
-                addView(label("${system.shortName} · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(game.playedAt))}", 11f, R.color.text_muted, false).apply {
-                    setPadding(0, dp(4), 0, 0)
-                })
-                setOnClickListener { if (system.id == "gba") launchGame(game.uri, game.name) else showSystem(system) }
             }
-            recentSection.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(9)
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(label(game.name.substringBeforeLast('.'), 14f, R.color.text_primary, true))
+                addView(label(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(game.playedAt)), 11f, R.color.text_muted, false))
+            }
+            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(actionButton("Play", true) {
+                if (game.systemId == "gba" && game.name.substringAfterLast('.', "").lowercase() == "gba") launchGame(game.uri, game.name)
+                else Toast.makeText(this, "${selectedSystem.coreName} is not integrated yet.", Toast.LENGTH_SHORT).show()
             })
+            row.addView(actionButton("Remove", false) {
+                recentStore.remove(game.uri)
+                renderSystemPage()
+            })
+            card.addView(row)
+            recentSection.addView(card, cardParams())
         }
+    }
+
+    private fun renderStates() {
+        stateSection.removeAllViews()
+        val games = recentStore.load().filter { it.systemId == selectedSystem.id }
+        val savedGames = games.map { it to localFiles(it).state }.filter { it.second.isFile }
+        stateSection.addView(sectionHeading("SAVE STATES", "${savedGames.size} QUICK SAVES"))
+        if (savedGames.isEmpty()) {
+            val copy = if (selectedSystem.id == "gba") "Quick Save during a game to create a screenshot-backed state here."
+            else "Save states will appear here when this system's native core is added."
+            stateSection.addView(emptyCard(copy))
+            return
+        }
+        savedGames.forEach { (game, state) ->
+            val local = localFiles(game)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                background = getDrawable(R.drawable.panel)
+            }
+            val thumbnail = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(Color.BLACK)
+                contentDescription = "${game.name} quick-save screenshot"
+                if (local.thumbnail.isFile) setImageBitmap(BitmapFactory.decodeFile(local.thumbnail.absolutePath))
+            }
+            card.addView(thumbnail, LinearLayout.LayoutParams(dp(112), dp(75)))
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, dp(8), 0)
+                addView(label(game.name.substringBeforeLast('.'), 13f, R.color.text_primary, true))
+                addView(label("Quick Save · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state.lastModified()))}", 10f, R.color.text_muted, false))
+            }
+            card.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            card.addView(actionButton("Load", true) { launchGame(game.uri, game.name, autoLoad = true) })
+            stateSection.addView(card, cardParams())
+        }
+    }
+
+    private fun localFiles(game: RecentGame): LocalFiles {
+        val safeName = game.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+        val key = game.uri.toString().hashCode().toUInt().toString(16)
+        val base = safeName.substringBeforeLast('.')
+        val save = File(filesDir, "saves/gba/${base}_$key.sav")
+        val state = File("${save.absolutePath}.quick.state")
+        return LocalFiles(save, state, File("${state.absolutePath}.png"))
+    }
+
+    private fun launchGame(uri: Uri, name: String, autoLoad: Boolean = false) {
+        Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()
+        Thread {
+            runCatching {
+                val romDirectory = File(filesDir, "roms/gba").apply { mkdirs() }
+                val local = localFiles(RecentGame("gba", name, uri, 0))
+                local.save.parentFile?.mkdirs()
+                val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                val key = uri.toString().hashCode().toUInt().toString(16)
+                val rom = File(romDirectory, "${key}_$safeName")
+                contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "Android could not open this game." }
+                    rom.outputStream().use { output -> input.copyTo(output) }
+                }
+                runOnUiThread {
+                    startActivity(Intent(this, EmulationActivity::class.java).apply {
+                        putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
+                        putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
+                        putExtra(EmulationActivity.EXTRA_AUTO_LOAD, autoLoad)
+                    })
+                }
+            }.onFailure { error ->
+                runOnUiThread { Toast.makeText(this, error.message ?: "Could not prepare game.", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
     }
 
     private fun displayName(uri: Uri): String {
@@ -183,28 +228,31 @@ class MainActivity : AppCompatActivity() {
         return uri.lastPathSegment ?: "game"
     }
 
-    private fun launchGame(uri: Uri, name: String) {
-        Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()
-        Thread {
-            runCatching {
-                val romDirectory = File(filesDir, "roms/gba").apply { mkdirs() }
-                val saveDirectory = File(filesDir, "saves/gba").apply { mkdirs() }
-                val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-                val key = uri.toString().hashCode().toUInt().toString(16)
-                val rom = File(romDirectory, "${key}_$safeName")
-                contentResolver.openInputStream(uri).use { input ->
-                    requireNotNull(input) { "Android could not open this game." }
-                    rom.outputStream().use { output -> input.copyTo(output) }
-                }
-                val save = File(saveDirectory, "${safeName.substringBeforeLast('.')}_$key.sav")
-                runOnUiThread {
-                    startActivity(Intent(this, EmulationActivity::class.java).apply {
-                        putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
-                        putExtra(EmulationActivity.EXTRA_SAVE, save.absolutePath)
-                    })
-                }
-            }.onFailure { error -> runOnUiThread { Toast.makeText(this, error.message ?: "Could not prepare game.", Toast.LENGTH_LONG).show() } }
-        }.start()
+    private fun sectionHeading(title: String, meta: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(label(title, 17f, R.color.text_primary, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(label(meta, 10f, R.color.text_muted, true))
+    }
+
+    private fun emptyCard(text: String) = label(text, 12f, R.color.text_muted, false).apply {
+        setPadding(dp(14), dp(18), dp(14), dp(18))
+        background = getDrawable(R.drawable.panel)
+    }
+
+    private fun actionButton(text: String, primary: Boolean, action: () -> Unit) = Button(this).apply {
+        this.text = text
+        textSize = 10f
+        isAllCaps = false
+        setTextColor(getColor(R.color.text_primary))
+        background = getDrawable(if (primary) R.drawable.button_primary else R.drawable.button_secondary)
+        setPadding(dp(10), 0, dp(10), 0)
+        setOnClickListener { action() }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginStart = dp(6) }
+    }
+
+    private fun cardParams() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        topMargin = dp(9)
     }
 
     private fun label(text: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
@@ -215,16 +263,29 @@ class MainActivity : AppCompatActivity() {
         maxLines = 2
     }
 
-    private fun selectableItemBackground() = android.util.TypedValue().let { value ->
-        theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true)
-        getDrawable(value.resourceId)
+    private inner class SystemAdapter : BaseAdapter() {
+        override fun getCount() = Systems.all.size
+        override fun getItem(position: Int) = Systems.all[position]
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?) =
+            systemLabel(convertView, Systems.all[position], false)
+        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup?) =
+            systemLabel(convertView, Systems.all[position], true)
+        private fun systemLabel(convertView: View?, system: SystemDefinition, dropdown: Boolean) =
+            (convertView as? TextView ?: TextView(this@MainActivity)).apply {
+                text = "${system.shortName}  ·  ${system.displayName}"
+                textSize = if (dropdown) 14f else 15f
+                setTextColor(getColor(if (system.id == selectedSystem.id) R.color.accent else R.color.text_primary))
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(if (dropdown) 12 else 8), dp(14), dp(if (dropdown) 12 else 8))
+                setBackgroundColor(getColor(if (dropdown) R.color.panel_raised else android.R.color.transparent))
+            }
     }
 
+    private fun supports(system: SystemDefinition) = deviceGlesVersion >= system.minimumGles
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    private fun supports(system: SystemDefinition) = deviceGlesVersion >= system.minimumGles
-
-    private fun glesName(version: Int) = "${version shr 16}.${version and 0xffff}"
+    private data class LocalFiles(val save: File, val state: File, val thumbnail: File)
 
     companion object {
         private const val PICK_GAME = 1001

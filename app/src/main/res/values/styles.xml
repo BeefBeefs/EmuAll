@@ -19,6 +19,9 @@
     <style name="EmuButton.Small" parent="EmuButton">
         <item name="android:layout_width">54dp</item><item name="android:layout_height">38dp</item><item name="android:layout_marginStart">4dp</item><item name="android:textSize">10sp</item>
     </style>
+    <style name="EmuButton.Toolbar" parent="EmuButton">
+        <item name="android:layout_width">0dp</item><item name="android:layout_height">38dp</item><item name="android:layout_weight">1</item><item name="android:layout_marginHorizontal">2dp</item><item name="android:textSize">10sp</item><item name="android:paddingHorizontal">0dp</item>
+    </style>
     <style name="EmuButton.Pad" parent="EmuButton">
         <item name="android:layout_width">52dp</item><item name="android:layout_height">52dp</item><item name="android:textSize">18sp</item>
     </style>

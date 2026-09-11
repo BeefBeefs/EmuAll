@@ -44,9 +44,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var firstHardwarePresentation = true
     private var hardwareFramePeriodNanos = 16_666_667L
     private var hardwareNextFrameNanos = 0L
+    private var hardwareMinimumYieldMillis = 0L
     private var statusCallback: ((String) -> Unit)? = null
     @Volatile private var glSurfaceWidth = 0
     @Volatile private var glSurfaceHeight = 0
+    private val requestNextHardwareFrame = Runnable {
+        if (running.get() && hardwareRendering && !paused.get()) requestRender()
+    }
 
     private data class HardwareSession(
         val corePath: String,
@@ -91,7 +95,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             hardwareStarted.set(false)
             firstHardwarePresentation = true
             hardwareNextFrameNanos = 0L
-            renderMode = RENDERMODE_CONTINUOUSLY
+            hardwareMinimumYieldMillis = 0L
+            // A dirty renderer produces exactly one Android presentation for
+            // each requested core frame. Continuous mode also drew between
+            // core frames (often at 120 Hz), which could sample Dolphin's live
+            // framebuffer while its dual-core renderer was updating it and
+            // starved Android input while Play! was busy.
+            renderMode = RENDERMODE_WHEN_DIRTY
             requestRender()
             return
         }
@@ -221,6 +231,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             // so the Android main thread can always dispatch touches instead
             // of tripping the five-second application-not-responding limit.
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            // Even when Play!'s first frames take seconds, require the next
+            // frame request to pass through Android's main queue. This gives
+            // pending touches and toolbar actions an input-dispatch turn and
+            // prevents consecutive retro_run calls from monopolizing the app.
+            hardwareMinimumYieldMillis = 8L
         }
         if (!NativeCoreBridge.start(session.corePath, session.romPath, session.savePath, session.systemDirectory, true, context.assets)) {
             running.set(false)
@@ -272,7 +287,10 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // measured size. Starting a core in that window permanently gives
         // some renderers the tiny bootstrap viewport (the PSP symptom was a
         // 310x176 image in a portrait surface). Wait for a real surface size.
-        if (width <= 1 || height <= 1) return
+        if (width <= 1 || height <= 1) {
+            scheduleNextHardwareFrame(16L)
+            return
+        }
         // Hardware cores render into a frontend-owned GLES framebuffer. This
         // keeps their fixed 480p/PSP-sized backbuffer independent from the
         // phone's portrait dimensions and lets us scale it cleanly below.
@@ -281,7 +299,10 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // producing their first frame. Starting before Android delivers the
         // Activity's initial focus event can overlap the five-second input
         // dispatch deadline and cause an ANR even though retro_run succeeds.
-        if (!hardwareStarted.get() && !hasWindowFocus()) return
+        if (!hardwareStarted.get() && !hasWindowFocus()) {
+            scheduleNextHardwareFrame(16L)
+            return
+        }
         val aspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
         val viewport = fitViewport(width, height, aspect)
         if (hardwareStarted.get() && paused.get()) {
@@ -294,14 +315,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         startHardwareSessionIfNeeded()
         if (!hardwareStarted.get()) return
 
-        // GLSurfaceView follows the display refresh rate, which is 120 Hz on
-        // many phones. Advance the core only at its advertised rate and
-        // present the last completed frame on intervening display refreshes.
-        // Without this gate, 59.94 Hz Dolphin content advances at 120 Hz and
-        // alternating menu/text fields appear to flicker or disappear.
+        // Advance the core only at its advertised rate. RENDERMODE_WHEN_DIRTY
+        // means early requests are rescheduled instead of swapping the live
+        // hardware target a second time between emulated frames.
         val frameStartNanos = System.nanoTime()
         if (!firstHardwarePresentation && frameStartNanos < hardwareNextFrameNanos) {
             gameRenderer.presentHardwareFrame(viewport)
+            scheduleNextHardwareFrame(nanosToDelayMillis(hardwareNextFrameNanos - frameStartNanos))
             return
         }
 
@@ -357,6 +377,16 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             hardwareNextFrameNanos = frameCompletedNanos
         }
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
+        val remainingNanos = (hardwareNextFrameNanos - System.nanoTime()).coerceAtLeast(0L)
+        scheduleNextHardwareFrame(maxOf(hardwareMinimumYieldMillis, nanosToDelayMillis(remainingNanos)))
+    }
+
+    private fun nanosToDelayMillis(nanos: Long): Long =
+        ((nanos.coerceAtLeast(0L) + 999_999L) / 1_000_000L).coerceAtLeast(1L)
+
+    private fun scheduleNextHardwareFrame(delayMillis: Long) {
+        removeCallbacks(requestNextHardwareFrame)
+        postDelayed(requestNextHardwareFrame, delayMillis.coerceAtLeast(1L))
     }
 
     /** Re-lays out the controls without pausing or reparenting the EGL view. */
@@ -389,12 +419,14 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     private fun stopHardwareSession() {
+        removeCallbacks(requestNextHardwareFrame)
         hardwareAudioRunning?.set(false)
         hardwareAudioThread?.join(1000)
         hardwareAudioThread = null
         hardwareAudioRunning = null
         if (hardwareStarted.compareAndSet(true, false)) NativeCoreBridge.stop()
         hardwareNextFrameNanos = 0L
+        hardwareMinimumYieldMillis = 0L
         hardwareSession = null
     }
 
@@ -434,12 +466,27 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         true
     }.getOrDefault(false)
 
-    fun setPaused(value: Boolean) = paused.set(value)
+    fun setPaused(value: Boolean) {
+        paused.set(value)
+        removeCallbacks(requestNextHardwareFrame)
+        if (hardwareRendering) requestRender()
+    }
     fun isPaused() = paused.get()
     fun toggleFastForward(): Boolean { val enabled = speed.get() == 1; speed.set(if (enabled) 3 else 1); return enabled }
-    fun resetGame() = pendingAction.set(ACTION_RESET)
-    fun quickSave(slot: Int = 1) { pendingSlot.set(slot.coerceIn(1, 3)); pendingAction.set(ACTION_QUICK_SAVE) }
-    fun quickLoad(slot: Int = 1) { pendingSlot.set(slot.coerceIn(1, 3)); pendingAction.set(ACTION_QUICK_LOAD) }
+    fun resetGame() {
+        pendingAction.set(ACTION_RESET)
+        if (hardwareRendering) requestRender()
+    }
+    fun quickSave(slot: Int = 1) {
+        pendingSlot.set(slot.coerceIn(1, 3))
+        pendingAction.set(ACTION_QUICK_SAVE)
+        if (hardwareRendering) requestRender()
+    }
+    fun quickLoad(slot: Int = 1) {
+        pendingSlot.set(slot.coerceIn(1, 3))
+        pendingAction.set(ACTION_QUICK_LOAD)
+        if (hardwareRendering) requestRender()
+    }
     fun setButton(id: Int, down: Boolean) = synchronized(this) {
         inputMask = if (down) inputMask or (1 shl id) else inputMask and (1 shl id).inv()
         NativeCoreBridge.setInputMask(inputMask)

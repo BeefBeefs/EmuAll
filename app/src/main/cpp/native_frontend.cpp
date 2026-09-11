@@ -474,6 +474,15 @@ bool environment(unsigned command, void* data) {
                     // scene intact while 2D elements flicker or disappear.
                     if (key == "dolphin_efb_access_enable")
                         value = "enabled";
+                    // Dolphin's own compatibility profiles use the safe
+                    // texture cache for games whose menu glyphs disappear,
+                    // and accurate depth calculation for titles with missing
+                    // menu text. Prefer correctness across the library over
+                    // the faster global defaults on this mobile frontend.
+                    if (key == "dolphin_texture_cache_accuracy")
+                        value = "0";
+                    if (key == "dolphin_fast_depth_calculation")
+                        value = "disabled";
                     // The Android frontend owns one GLSurfaceView EGL context
                     // and cannot supply the additional shared contexts used by
                     // Dolphin's asynchronous shader workers. Compile on the

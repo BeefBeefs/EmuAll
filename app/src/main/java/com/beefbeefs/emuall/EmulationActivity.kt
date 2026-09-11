@@ -296,8 +296,13 @@ class EmulationActivity : AppCompatActivity() {
             }
         }
         controls.post {
-            ensureIndividualControlLayout()
-            applySavedControlPositions(orientation)
+            val reparented = ensureIndividualControlLayout()
+            // Reparenting invalidates every child's left/top coordinates.
+            // Wait one additional layout pass before assigning absolute x/y;
+            // doing it immediately made Android apply the old-parent offset
+            // again and pushed otherwise valid defaults beyond the screen.
+            if (reparented) controls.post { applySavedControlPositions(orientation) }
+            else applySavedControlPositions(orientation)
         }
     }
 
@@ -357,13 +362,12 @@ class EmulationActivity : AppCompatActivity() {
      * left in the original GridLayout/LinearLayout as a layout anchor; this
      * preserves all existing system- and orientation-specific defaults.
      */
-    private fun ensureIndividualControlLayout() {
-        if (individualControlsReady) return
+    private fun ensureIndividualControlLayout(): Boolean {
+        if (individualControlsReady) return false
         val controls = findViewById<FrameLayout>(R.id.gameControls)
-        if (controls.width <= 0 || controls.height <= 0) return
-        val overlayLocation = IntArray(2)
-        controls.getLocationOnScreen(overlayLocation)
+        if (controls.width <= 0 || controls.height <= 0) return false
         var laidOutControlFound = false
+        var reparented = false
 
         MOVABLE_CONTROLS.forEach { (_, id) ->
             val view = findViewById<View>(id)
@@ -372,8 +376,6 @@ class EmulationActivity : AppCompatActivity() {
             if (view.parent === controls) return@forEach
             val parent = view.parent as? ViewGroup ?: return@forEach
             val index = parent.indexOfChild(view)
-            val screenLocation = IntArray(2)
-            view.getLocationOnScreen(screenLocation)
             val measuredWidth = view.width
             val measuredHeight = view.height
             val originalLayoutParams = view.layoutParams
@@ -386,11 +388,11 @@ class EmulationActivity : AppCompatActivity() {
             controls.addView(view, FrameLayout.LayoutParams(measuredWidth, measuredHeight))
             view.translationX = 0f
             view.translationY = 0f
-            view.x = (screenLocation[0] - overlayLocation[0]).toFloat()
-            view.y = (screenLocation[1] - overlayLocation[1]).toFloat()
             controlPlaceholders[id] = placeholder
+            reparented = true
         }
         individualControlsReady = laidOutControlFound
+        return reparented
     }
 
     private fun saveControlPositions(orientation: Int) {
@@ -417,17 +419,22 @@ class EmulationActivity : AppCompatActivity() {
         MOVABLE_CONTROLS.forEach { (name, id) ->
             val view = findViewById<View>(id)
             if (!view.isShown) return@forEach
+            val maxX = (controls.width - view.width).coerceAtLeast(0)
+            val maxY = (controls.height - view.height).coerceAtLeast(0)
+            var targetX = view.x.coerceIn(0f, maxX.toFloat())
+            var targetY = view.y.coerceIn(0f, maxY.toFloat())
             controlPlaceholders[id]?.let { placeholder ->
                 val defaultLocation = IntArray(2)
                 placeholder.getLocationOnScreen(defaultLocation)
-                view.x = (defaultLocation[0] - overlayLocation[0]).toFloat()
-                view.y = (defaultLocation[1] - overlayLocation[1]).toFloat()
+                targetX = (defaultLocation[0] - overlayLocation[0]).toFloat().coerceIn(0f, maxX.toFloat())
+                targetY = (defaultLocation[1] - overlayLocation[1]).toFloat().coerceIn(0f, maxY.toFloat())
             }
-            val saved = controlLayoutStore.position(systemId, orientation, name) ?: return@forEach
-            val maxX = (controls.width - view.width).coerceAtLeast(0)
-            val maxY = (controls.height - view.height).coerceAtLeast(0)
-            view.x = saved.x * maxX
-            view.y = saved.y * maxY
+            controlLayoutStore.position(systemId, orientation, name)?.let { saved ->
+                targetX = (saved.x * maxX).coerceIn(0f, maxX.toFloat())
+                targetY = (saved.y * maxY).coerceIn(0f, maxY.toFloat())
+            }
+            view.x = targetX
+            view.y = targetY
         }
     }
 

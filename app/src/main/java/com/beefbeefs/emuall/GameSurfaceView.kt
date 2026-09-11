@@ -213,11 +213,21 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private fun startHardwareSessionIfNeeded() {
         val session = hardwareSession ?: return
         if (!hardwareStartAttempted.compareAndSet(false, true)) return
+        val isPlay = session.coreName.contains("Play!", ignoreCase = true) ||
+            session.corePath.contains("libplay_", ignoreCase = true)
+        if (isPlay) {
+            // Play! creates its continuously-running PS2 worker threads while
+            // retro_init executes below. Let them inherit background priority
+            // so the Android main thread can always dispatch touches instead
+            // of tripping the five-second application-not-responding limit.
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+        }
         if (!NativeCoreBridge.start(session.corePath, session.romPath, session.savePath, session.systemDirectory, true, context.assets)) {
             running.set(false)
             statusCallback?.invoke(NativeCoreBridge.lastError())
             return
         }
+        if (isPlay) NativeCoreBridge.diagnosticMarker("Play! workers use background priority to preserve Android input responsiveness")
         val coreFps = NativeCoreBridge.framesPerSecond().takeIf { it.isFinite() && it >= 1.0 } ?: 60.0
         hardwareFramePeriodNanos = (1_000_000_000.0 / coreFps).toLong().coerceAtLeast(1L)
         hardwareNextFrameNanos = System.nanoTime()

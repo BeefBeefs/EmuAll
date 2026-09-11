@@ -6,6 +6,15 @@ import android.content.Context
 class VirtualControlLayoutStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    init {
+        // Version 2 replaces group-relative coordinates with independently
+        // positioned top-level controls. Old values can resolve outside the
+        // screen after reparenting, so reset every console/orientation once.
+        if (preferences.getInt(SCHEMA_KEY, 0) < CURRENT_SCHEMA) {
+            preferences.edit().clear().putInt(SCHEMA_KEY, CURRENT_SCHEMA).apply()
+        }
+    }
+
     data class Position(val x: Float, val y: Float)
 
     fun position(systemId: String, orientation: Int, control: String): Position? {
@@ -32,5 +41,7 @@ class VirtualControlLayoutStore(context: Context) {
 
     private companion object {
         const val PREFERENCES = "virtual_control_layouts"
+        const val SCHEMA_KEY = "layout_schema"
+        const val CURRENT_SCHEMA = 2
     }
 }

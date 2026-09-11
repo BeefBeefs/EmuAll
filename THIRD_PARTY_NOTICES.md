@@ -8,7 +8,7 @@ EmuAll Build 2 compiles the mGBA libretro core from the pinned `libretro/mgba` s
 - License: Mozilla Public License 2.0
 - Source changes: none
 
-The mGBA source tree includes its complete license notices. EmuAll does not include games, BIOS files, or firmware.
+The mGBA source tree includes its complete license notices. EmuAll does not include games.
 
 ## Libretro Android cores
 
@@ -25,6 +25,8 @@ The ARM64 test build also bundles the following official Android libretro core b
 - Play! — https://github.com/jpd002/Play-
 
 Binary source directory: https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/
+
+The GameCube/Wii integration also packages Libretro's official Dolphin system-data archive so the core has its required `dolphin-emu/Sys` runtime files. The archive includes Dolphin's own license notice.
 
 The five buildbot binaries that shared the generic `libretro.so` ELF soname have that soname made unique during packaging so Android can load multiple cores in one process. No executable code was changed.
 

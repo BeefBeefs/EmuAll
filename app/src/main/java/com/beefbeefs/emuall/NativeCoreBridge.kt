@@ -13,6 +13,7 @@ object NativeCoreBridge {
     external fun frontendVersion(): String
     external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, hardwareRendering: Boolean): Boolean
     external fun setHardwareFramebuffer(framebuffer: Int)
+    external fun setGraphicsContextVersion(major: Int, minor: Int)
     external fun hardwareContextDestroy()
     external fun hardwareContextReset()
     external fun runFrame(): Boolean

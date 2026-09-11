@@ -17,6 +17,7 @@
             <Button android:id="@+id/quickSaveButton" style="@style/EmuButton.Toolbar" android:contentDescription="Choose a save-state slot" android:text="Save..." />
             <Button android:id="@+id/quickLoadButton" style="@style/EmuButton.Toolbar" android:contentDescription="Choose a load-state slot" android:text="Load..." />
             <Button android:id="@+id/resetButton" style="@style/EmuButton.Toolbar" android:text="Reset" />
+            <Button android:id="@+id/editControlsButton" style="@style/EmuButton.Toolbar" android:contentDescription="Move and save virtual controls" android:text="Move" />
             <Button android:id="@+id/menuButton" style="@style/EmuButton.Toolbar" android:text="Menu" />
         </LinearLayout>
     </LinearLayout>

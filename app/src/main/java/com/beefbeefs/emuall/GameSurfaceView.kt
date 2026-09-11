@@ -20,6 +20,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.egl.EGL10
+import javax.microedition.khronos.egl.EGLContext
+import javax.microedition.khronos.egl.EGLDisplay
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.max
 
@@ -55,6 +58,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // The software texture path works on GLES3 as well, while the first
         // hardware core (Mupen64Plus-Next GLES3) requires an ES 3 context.
         setEGLContextClientVersion(3)
+        setEGLContextFactory(HighestGlesContextFactory())
         // Hardware libretro cores are allowed to request depth/stencil
         // buffers in SET_HW_RENDER.  Ask Android for a config that satisfies
         // the N64 renderer up front; the same config is harmless for the
@@ -254,6 +258,15 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // keeps their fixed 480p/PSP-sized backbuffer independent from the
         // phone's portrait dimensions and lets us scale it cleanly below.
         gameRenderer.ensureHardwareTarget()
+        val aspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
+        val viewport = fitViewport(width, height, aspect)
+        if (hardwareStarted.get() && paused.get()) {
+            // Preserve and present the last completed texture while paused.
+            // Clearing the core FBO first made Pause (and control-edit mode)
+            // display a black frame on hardware-rendered systems.
+            gameRenderer.presentHardwareFrame(viewport)
+            return
+        }
         if (gameRenderer.hasHardwareTarget()) {
             gameRenderer.bindHardwareTarget()
             GLES20.glViewport(0, 0, gameRenderer.hardwareWidth(), gameRenderer.hardwareHeight())
@@ -287,8 +300,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // the phone's current orientation. The ratio comes from the
         // core's libretro AV geometry (PSP 16:9, N64/GC/PS2 4:3 by default,
         // and any core-specific runtime geometry when available).
-        val aspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
-        val viewport = fitViewport(width, height, aspect)
+        val updatedAspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
+        val updatedViewport = fitViewport(width, height, updatedAspect)
         if (gameRenderer.hasHardwareTarget()) {
             gameRenderer.bindHardwareTarget()
             GLES20.glViewport(0, 0, gameRenderer.hardwareWidth(), gameRenderer.hardwareHeight())
@@ -302,7 +315,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             statusCallback?.invoke(NativeCoreBridge.lastError().ifBlank { "The native core stopped unexpectedly" })
             return
         }
-        gameRenderer.presentHardwareFrame(viewport)
+        gameRenderer.presentHardwareFrame(updatedViewport)
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
     }
 
@@ -452,6 +465,19 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         }
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+            val majorValue = IntArray(1)
+            val minorValue = IntArray(1)
+            GLES30.glGetIntegerv(GL_MAJOR_VERSION, majorValue, 0)
+            GLES30.glGetIntegerv(GL_MINOR_VERSION, minorValue, 0)
+            var major = majorValue[0]
+            var minor = minorValue[0]
+            if (major < 2) {
+                val parsed = Regex("OpenGL ES (\\d+)\\.(\\d+)")
+                    .find(GLES20.glGetString(GLES20.GL_VERSION).orEmpty())
+                major = parsed?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 3
+                minor = parsed?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
+            }
+            NativeCoreBridge.setGraphicsContextVersion(major, minor)
             textureWidth = 0
             textureHeight = 0
             textureFormat = 0
@@ -622,9 +648,56 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     private companion object {
+        const val GL_MAJOR_VERSION = 0x821B
+        const val GL_MINOR_VERSION = 0x821C
         const val ACTION_NONE = 0
         const val ACTION_RESET = 1
         const val ACTION_QUICK_SAVE = 2
         const val ACTION_QUICK_LOAD = 3
+    }
+
+    /**
+     * Requests the highest GLES 3.x context the phone exposes. The stock
+     * GLSurfaceView factory requests only a major version, which commonly
+     * yields GLES 3.0 even on devices capable of 3.2. Play! requires 3.2 and
+     * Dolphin benefits from its explicit 3.2/3.1 fallback sequence.
+     */
+    private class HighestGlesContextFactory : GLSurfaceView.EGLContextFactory {
+        override fun createContext(egl: EGL10, display: EGLDisplay, config: EGLConfig): EGLContext {
+            for (minor in intArrayOf(2, 1, 0)) {
+                val context = egl.eglCreateContext(
+                    display,
+                    config,
+                    EGL10.EGL_NO_CONTEXT,
+                    intArrayOf(
+                        EGL_CONTEXT_CLIENT_VERSION, 3,
+                        EGL_CONTEXT_MINOR_VERSION_KHR, minor,
+                        EGL10.EGL_NONE,
+                    ),
+                )
+                if (context != null && context != EGL10.EGL_NO_CONTEXT) return context
+                // Consume the failed probe before trying a lower version.
+                egl.eglGetError()
+            }
+            val legacy = egl.eglCreateContext(
+                display,
+                config,
+                EGL10.EGL_NO_CONTEXT,
+                intArrayOf(EGL_CONTEXT_CLIENT_VERSION, 3, EGL10.EGL_NONE),
+            )
+            require(legacy != null && legacy != EGL10.EGL_NO_CONTEXT) {
+                "This device could not create an OpenGL ES 3 context."
+            }
+            return legacy
+        }
+
+        override fun destroyContext(egl: EGL10, display: EGLDisplay, context: EGLContext) {
+            egl.eglDestroyContext(display, context)
+        }
+
+        private companion object {
+            const val EGL_CONTEXT_CLIENT_VERSION = 0x3098
+            const val EGL_CONTEXT_MINOR_VERSION_KHR = 0x30FB
+        }
     }
 }

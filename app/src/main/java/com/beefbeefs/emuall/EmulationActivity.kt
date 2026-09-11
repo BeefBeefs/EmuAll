@@ -18,7 +18,15 @@ class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
     private lateinit var surfaceHost: FrameLayout
     private lateinit var systemId: String
+    private val controlLayoutStore by lazy { VirtualControlLayoutStore(this) }
     private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
+    private var editingControls = false
+    private var wasPausedBeforeControlEdit = false
+    private var layoutOrientation = Configuration.ORIENTATION_UNDEFINED
+    private var draggedControl: View? = null
+    private var dragOffsetX = 0f
+    private var dragOffsetY = 0f
+    private var lastSessionStatus = "Starting core…"
     // Rotation can destroy/recreate a window while Android reports the old
     // Activity as finishing. Only an explicit user exit is allowed to stop
     // the native session; configuration changes must leave it alive.
@@ -35,7 +43,8 @@ class EmulationActivity : AppCompatActivity() {
         surfaceHost = findViewById(R.id.surfaceHost)
         systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
         configureControlProfile()
-        applySessionLayout(resources.configuration.orientation)
+        layoutOrientation = resources.configuration.orientation
+        applySessionLayout(layoutOrientation)
         val rom = intent.getStringExtra(EXTRA_ROM)
         if (rom.isNullOrBlank()) {
             showLaunchError("Could not start emulation: no prepared game file was provided.")
@@ -62,10 +71,14 @@ class EmulationActivity : AppCompatActivity() {
         }
         val systemDirectory = intent.getStringExtra(EXTRA_SYSTEM_DIRECTORY) ?: filesDir.absolutePath
         surface.start(corePath.absolutePath, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
-            runOnUiThread { findViewById<TextView>(R.id.sessionStatus).text = status }
+            runOnUiThread {
+                lastSessionStatus = status
+                if (!editingControls) findViewById<TextView>(R.id.sessionStatus).text = status
+            }
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
         findViewById<Button>(R.id.menuButton).setOnClickListener {
+            if (editingControls) leaveControlEditMode(save = true)
             explicitExit = true
             finish()
         }
@@ -80,6 +93,9 @@ class EmulationActivity : AppCompatActivity() {
             setOnClickListener { showStateMenu(this, false) }
         }
         findViewById<Button>(R.id.fastButton).setOnClickListener { button -> (button as Button).text = if (surface.toggleFastForward()) "FF 3×" else "FF" }
+        findViewById<Button>(R.id.editControlsButton).setOnClickListener {
+            if (editingControls) leaveControlEditMode(save = true) else enterControlEditMode()
+        }
     }
 
     private fun showLaunchError(message: String) {
@@ -100,7 +116,9 @@ class EmulationActivity : AppCompatActivity() {
         // live EGL context must not be paused or reparented while a libretro
         // core is running; doing that leaves most hardware cores drawing into
         // a destroyed surface after the rotation.
-        applySessionLayout(newConfig.orientation)
+        if (editingControls) saveControlPositions(layoutOrientation)
+        layoutOrientation = newConfig.orientation
+        applySessionLayout(layoutOrientation)
         surface.post { surface.onLayoutChanged() }
     }
 
@@ -112,6 +130,13 @@ class EmulationActivity : AppCompatActivity() {
         val actionButtons = findViewById<View>(R.id.actionButtons)
         val cButtonPad = findViewById<View>(R.id.cButtonPad)
         val centerButtons = findViewById<View>(R.id.centerButtons)
+        controlGroups().forEach {
+            // x/y dragging is represented internally as translation from the
+            // gravity-based default. Reset it before applying a new screen
+            // orientation, then restore that orientation's saved positions.
+            it.translationX = 0f
+            it.translationY = 0f
+        }
         val hasLeftStick = leftStick.visibility == View.VISIBLE
         val hasRightStick = rightStick.visibility == View.VISIBLE
         val hasCPad = cButtonPad.visibility == View.VISIBLE
@@ -235,6 +260,125 @@ class EmulationActivity : AppCompatActivity() {
                 bottomMargin = dp(if (hasCPad) 112 else 8)
             }
         }
+        controls.post { applySavedControlPositions(orientation) }
+    }
+
+    private fun enterControlEditMode() {
+        editingControls = true
+        wasPausedBeforeControlEdit = surface.isPaused()
+        surface.setPaused(true)
+        findViewById<Button>(R.id.editControlsButton).text = "Save"
+        setToolbarActionsEnabled(false)
+        findViewById<TextView>(R.id.sessionStatus).text =
+            "Move controls · drag a control group, then tap Save"
+        controlGroups().filter { it.visibility == View.VISIBLE }.forEach {
+            it.scaleX = 1.04f
+            it.scaleY = 1.04f
+            it.elevation = dp(8).toFloat()
+        }
+    }
+
+    private fun leaveControlEditMode(save: Boolean) {
+        if (!editingControls) return
+        if (save) saveControlPositions(layoutOrientation)
+        draggedControl = null
+        editingControls = false
+        controlGroups().forEach {
+            it.scaleX = 1f
+            it.scaleY = 1f
+            it.elevation = 0f
+        }
+        surface.setPaused(wasPausedBeforeControlEdit)
+        findViewById<Button>(R.id.editControlsButton).text = "Move"
+        setToolbarActionsEnabled(true)
+        findViewById<Button>(R.id.pauseButton).text = if (surface.isPaused()) "Resume" else "Pause"
+        findViewById<TextView>(R.id.sessionStatus).text =
+            if (save) "Controls saved for ${Systems.byId(systemId)?.shortName ?: systemId.uppercase()}" else lastSessionStatus
+        if (save) findViewById<TextView>(R.id.sessionStatus).postDelayed({
+            if (!editingControls) findViewById<TextView>(R.id.sessionStatus).text = lastSessionStatus
+        }, 1500)
+    }
+
+    private fun setToolbarActionsEnabled(enabled: Boolean) {
+        listOf(
+            R.id.pauseButton,
+            R.id.fastButton,
+            R.id.quickSaveButton,
+            R.id.quickLoadButton,
+            R.id.resetButton,
+        ).forEach { findViewById<View>(it).isEnabled = enabled }
+    }
+
+    private fun controlGroups(): List<View> = CONTROL_GROUPS.map { findViewById(it.second) }
+
+    private fun saveControlPositions(orientation: Int) {
+        val controls = findViewById<FrameLayout>(R.id.gameControls)
+        if (controls.width <= 0 || controls.height <= 0) return
+        val positions = CONTROL_GROUPS.mapNotNull { (name, id) ->
+            val view = findViewById<View>(id)
+            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) return@mapNotNull null
+            val maxX = (controls.width - view.width).coerceAtLeast(1)
+            val maxY = (controls.height - view.height).coerceAtLeast(1)
+            name to VirtualControlLayoutStore.Position(
+                (view.x / maxX).coerceIn(0f, 1f),
+                (view.y / maxY).coerceIn(0f, 1f),
+            )
+        }.toMap()
+        controlLayoutStore.save(systemId, orientation, positions)
+    }
+
+    private fun applySavedControlPositions(orientation: Int) {
+        val controls = findViewById<FrameLayout>(R.id.gameControls)
+        if (controls.width <= 0 || controls.height <= 0) return
+        CONTROL_GROUPS.forEach { (name, id) ->
+            val view = findViewById<View>(id)
+            if (view.visibility != View.VISIBLE) return@forEach
+            val saved = controlLayoutStore.position(systemId, orientation, name) ?: return@forEach
+            val maxX = (controls.width - view.width).coerceAtLeast(0)
+            val maxY = (controls.height - view.height).coerceAtLeast(0)
+            view.x = saved.x * maxX
+            view.y = saved.y * maxY
+        }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (!editingControls) return super.dispatchTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val target = controlGroups().asReversed().firstOrNull { view ->
+                    if (view.visibility != View.VISIBLE) return@firstOrNull false
+                    val location = IntArray(2)
+                    view.getLocationOnScreen(location)
+                    event.rawX >= location[0] && event.rawX <= location[0] + view.width &&
+                        event.rawY >= location[1] && event.rawY <= location[1] + view.height
+                } ?: return super.dispatchTouchEvent(event)
+                val targetLocation = IntArray(2)
+                target.getLocationOnScreen(targetLocation)
+                dragOffsetX = event.rawX - targetLocation[0]
+                dragOffsetY = event.rawY - targetLocation[1]
+                draggedControl = target
+                target.parent?.requestDisallowInterceptTouchEvent(true)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val target = draggedControl ?: return super.dispatchTouchEvent(event)
+                val controls = findViewById<FrameLayout>(R.id.gameControls)
+                val overlayLocation = IntArray(2)
+                controls.getLocationOnScreen(overlayLocation)
+                val maxX = (controls.width - target.width).coerceAtLeast(0).toFloat()
+                val maxY = (controls.height - target.height).coerceAtLeast(0).toFloat()
+                target.x = (event.rawX - overlayLocation[0] - dragOffsetX).coerceIn(0f, maxX)
+                target.y = (event.rawY - overlayLocation[1] - dragOffsetY).coerceIn(0f, maxY)
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (draggedControl != null) {
+                    draggedControl = null
+                    return true
+                }
+            }
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     /** Keep the d-pad compact on systems that also show a stick and extra buttons. */
@@ -402,6 +546,7 @@ class EmulationActivity : AppCompatActivity() {
 
     @Deprecated("Use the system back dispatcher in a future Activity Result migration")
     override fun onBackPressed() {
+        if (editingControls) leaveControlEditMode(save = true)
         explicitExit = true
         super.onBackPressed()
     }
@@ -410,10 +555,19 @@ class EmulationActivity : AppCompatActivity() {
         // Do not infer an emulation exit from Activity destruction. During a
         // rotation Android may tear down the old window and report it as
         // finishing even though the user is still in the same session.
+        if (editingControls) saveControlPositions(layoutOrientation)
         if (explicitExit) surface.stop()
         super.onDestroy()
     }
     companion object {
+        private val CONTROL_GROUPS = listOf(
+            "dpad" to R.id.directionalPad,
+            "left_stick" to R.id.leftAnalogStick,
+            "right_stick" to R.id.rightAnalogStick,
+            "actions" to R.id.actionButtons,
+            "c_buttons" to R.id.cButtonPad,
+            "center" to R.id.centerButtons,
+        )
         const val EXTRA_ROM = "rom"
         const val EXTRA_SAVE = "save"
         const val EXTRA_CORE_LIBRARY = "core_library"

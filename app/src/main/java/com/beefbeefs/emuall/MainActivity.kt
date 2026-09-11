@@ -390,7 +390,9 @@ class MainActivity : AppCompatActivity() {
                 val local = localFiles(RecentGame(systemId, name, uri, 0))
                 local.save.parentFile?.mkdirs()
                 report("Checking file and storage", 0L, -1L)
-                val cached = recent?.cachedRomPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
+                val cached = recent?.cachedRomPath?.let(::File)?.takeIf {
+                    it.isFile && it.length() > 0L && isReusablePreparedFile(it, name, systemId)
+                }
                 val rom = if (cached != null) {
                     report("Using prepared game copy", 1L, 1L)
                     cached
@@ -401,7 +403,7 @@ class MainActivity : AppCompatActivity() {
                 validatePreparedRom(rom, systemId)
                 recentStore.touch(uri, rom.absolutePath)
                 postPreparation("Launching ${core.displayName}", -1L, -1L)
-                val systemDirectory = systemDirectoryFor(systemId)
+                val systemDirectory = systemDirectoryFor(systemId, report)
                 val intent = Intent(this, EmulationActivity::class.java).apply {
                     putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
                     putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
@@ -494,6 +496,17 @@ class MainActivity : AppCompatActivity() {
             current = current?.cause
         }
         return messages.joinToString(" → ").ifBlank { error.javaClass.simpleName }
+    }
+
+    private fun isReusablePreparedFile(file: File, originalName: String, systemId: String): Boolean {
+        val originalExtension = originalName.substringAfterLast('.', "").lowercase()
+        if (systemId == "dreamcast" && originalExtension in setOf("zip", "7z")) {
+            // Older builds could cache track01.iso as the selected game even
+            // when the archive also contained a GDI descriptor. Force those
+            // ambiguous prepared copies through the corrected selector once.
+            return file.extension.lowercase() !in setOf("iso", "bin", "raw", "wav", "img", "dat")
+        }
+        return true
     }
 
     private fun prepareRom(
@@ -655,7 +668,7 @@ class MainActivity : AppCompatActivity() {
                         entry.size.takeIf { it > 0L } ?: -1L,
                         report,
                     )
-                    if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
+                    if (selected == null || archiveEntryPriority(entry.name, systemId) < archiveEntryPriority(selected!!.name, systemId)) {
                         selected = output
                     }
                 }
@@ -699,7 +712,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         report("Extracting $entryName", total, entrySize)
                     }
-                    if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
+                    if (selected == null || archiveEntryPriority(entry.name, systemId) < archiveEntryPriority(selected!!.name, systemId)) {
                         selected = output
                     }
                 }
@@ -746,6 +759,11 @@ class MainActivity : AppCompatActivity() {
     } ?: -1L
 
     private fun maxRomBytes(systemId: String): Long = when (systemId) {
+        // PCSX-ReARMed was working with full-size disc images before the
+        // preparation progress UI was introduced. PS1 accidentally fell
+        // through to the 128 MB cartridge guard in that refactor. It has no
+        // frontend-imposed size ceiling; the real constraint is free storage.
+        "ps1" -> Long.MAX_VALUE
         "gamecube", "dreamcast", "psp", "ps2" -> MAX_DISC_IMAGE_BYTES
         else -> MAX_ROM_BYTES
     }
@@ -780,9 +798,22 @@ class MainActivity : AppCompatActivity() {
         .joinToString("/") { it.replace('\u0000', '_') }
         .ifBlank { "entry" }
 
-    private fun archiveEntryPriority(name: String): Int = when (name.substringAfterLast('.', "").lowercase()) {
-        "gdi", "cue", "m3u", "lst", "elf", "iso", "chd", "cdi", "cso", "pbp", "z64", "n64", "v64" -> 0
-        else -> 1
+    private fun archiveEntryPriority(name: String, systemId: String): Int {
+        val extension = name.substringAfterLast('.', "").lowercase()
+        // In a Dreamcast archive, .iso/.bin files are commonly tracks owned
+        // by a GDI/CUE descriptor, not independently bootable games. Giving
+        // every supported extension equal priority could launch track01.iso
+        // simply because it appeared before game.gdi in the ZIP directory.
+        if (systemId == "dreamcast") return when (extension) {
+            "gdi", "cue", "m3u" -> 0
+            "cdi", "chd", "lst", "elf" -> 1
+            else -> 10
+        }
+        return when (extension) {
+            "cue", "m3u" -> 0
+            "lst", "elf", "iso", "chd", "cdi", "cso", "pbp", "z64", "n64", "v64" -> 1
+            else -> 10
+        }
     }
 
     private fun displayName(uri: Uri): String {
@@ -794,9 +825,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun biosDirectory(systemId: String) = File(filesDir, "bios/$systemId")
 
-    private fun systemDirectoryFor(systemId: String): String {
-        if (systemId == "dreamcast") ensureBundledDreamcastBios()
-        return if (systemId == "dreamcast") biosDirectory(systemId).absolutePath else filesDir.absolutePath
+    private fun systemDirectoryFor(
+        systemId: String,
+        report: (String, Long, Long) -> Unit,
+    ): String {
+        if (systemId == "dreamcast") {
+            ensureBundledDreamcastBios()
+            return biosDirectory(systemId).absolutePath
+        }
+        val systemRoot = File(filesDir, "systems/$systemId").apply { mkdirs() }
+        if (systemId == "gamecube") ensureBundledDolphinSystemFiles(systemRoot, report)
+        return systemRoot.absolutePath
     }
 
     /** Copies the repository-provided Dreamcast BIOS into Flycast's expected layout. */
@@ -808,6 +847,41 @@ class MainActivity : AppCompatActivity() {
                 target.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
             }
         }
+    }
+
+    /** Installs the official libretro Dolphin runtime data on first launch. */
+    private fun ensureBundledDolphinSystemFiles(
+        systemRoot: File,
+        report: (String, Long, Long) -> Unit,
+    ) {
+        val codeHandler = File(systemRoot, "dolphin-emu/Sys/codehandler.bin")
+        val marker = File(systemRoot, ".dolphin-system-$DOLPHIN_SYSTEM_ASSET_VERSION")
+        if (marker.isFile && codeHandler.isFile && codeHandler.length() > 0L) return
+
+        report("Installing Dolphin system files", 0L, -1L)
+        assets.open("dolphin/Dolphin.zip").use { source ->
+            ZipInputStream(BufferedInputStream(source)).use { archive ->
+                while (true) {
+                    val entry = archive.nextEntry ?: break
+                    val relative = safeRelativeEntryName(entry.name)
+                    val output = File(systemRoot, relative)
+                    require(output.canonicalPath.startsWith(systemRoot.canonicalPath + File.separator)) {
+                        "The bundled Dolphin system archive contains an invalid path."
+                    }
+                    if (entry.isDirectory) {
+                        output.mkdirs()
+                    } else {
+                        output.parentFile?.mkdirs()
+                        FileOutputStream(output).use { destination -> archive.copyTo(destination, BUFFER_SIZE) }
+                    }
+                    archive.closeEntry()
+                }
+            }
+        }
+        require(codeHandler.isFile && codeHandler.length() > 0L) {
+            "Dolphin system files could not be installed (codehandler.bin is missing)."
+        }
+        marker.writeText(DOLPHIN_SYSTEM_ASSET_VERSION)
     }
 
     private fun sectionHeading(title: String, meta: String) = LinearLayout(this).apply {
@@ -964,5 +1038,6 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_ROM_BYTES = 128L * 1024L * 1024L
         private const val MAX_DISC_IMAGE_BYTES = 16L * 1024L * 1024L * 1024L
         private const val MIN_FREE_SPACE_BYTES = 128L * 1024L * 1024L
+        private const val DOLPHIN_SYSTEM_ASSET_VERSION = "2026-09-10"
     }
 }

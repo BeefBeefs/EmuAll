@@ -74,7 +74,12 @@ struct Session {
     std::string saveDirectory;
     std::string corePath;
     std::string lastError;
+    std::string lastCoreError;
+    std::string graphicsNegotiationError;
+    std::mutex logMutex;
     std::unordered_map<std::string, std::string> variables;
+    unsigned glesMajor{3};
+    unsigned glesMinor{0};
     bool hardwareRendering{};
     bool hardwareContextConfigured{};
     retro_hw_render_callback hardwareCallback{};
@@ -146,8 +151,21 @@ void core_log(enum retro_log_level level, const char* format, ...) {
         level == RETRO_LOG_WARN ? ANDROID_LOG_WARN : ANDROID_LOG_INFO;
     va_list args;
     va_start(args, format);
+    va_list copy;
+    va_copy(copy, args);
+    char message[2048]{};
+    std::vsnprintf(message, sizeof(message), format, copy);
+    va_end(copy);
     __android_log_vprint(priority, "EmuAllNative", format, args);
     va_end(args);
+    if (level == RETRO_LOG_ERROR) {
+        std::string clean(message);
+        while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r')) clean.pop_back();
+        if (!clean.empty()) {
+            std::lock_guard lock(g.logMutex);
+            g.lastCoreError = clean;
+        }
+    }
 }
 
 uintptr_t hardware_framebuffer() { return g.hardwareFramebuffer; }
@@ -213,30 +231,50 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_HW_RENDER: {
             if (!g.hardwareRendering || !data) return false;
             auto* callback = static_cast<retro_hw_render_callback*>(data);
-            // The Android surface currently exposes GLES 3.0. Never claim to
-            // provide Vulkan or a desktop-only API such as D3D; those cores
-            // need a real native context negotiation interface. A few Android
-            // builds (notably PPSSPP) label their GLES path as OPENGL, so keep
-            // those legacy requests as compatibility aliases for GLES3.
-            if ((is_core("dolphin") || is_core("flycast")) &&
-                (callback->context_type == RETRO_HW_CONTEXT_OPENGL ||
-                 callback->context_type == RETRO_HW_CONTEXT_OPENGL_CORE)) {
-                g.lastError = "This Android build requested desktop OpenGL for a GLES-only core";
-                __android_log_print(ANDROID_LOG_ERROR, "EmuAllNative", "%s", g.lastError.c_str());
+            // A libretro frontend must either provide the version the core
+            // requested or reject it so the core can try a lower fallback.
+            // The previous frontend accepted Play!'s GLES 3.2 request and
+            // then rewrote it to 3.0, leaving the core to compile 3.2 shaders
+            // against a context that did not provide the required features.
+            const bool desktopGl = callback->context_type == RETRO_HW_CONTEXT_OPENGL ||
+                callback->context_type == RETRO_HW_CONTEXT_OPENGL_CORE;
+            if (desktopGl && !is_core("ppsspp")) {
+                g.graphicsNegotiationError = "The Android core requested desktop OpenGL instead of OpenGL ES";
+                __android_log_print(ANDROID_LOG_WARN, "EmuAllNative", "%s", g.graphicsNegotiationError.c_str());
                 return false;
             }
-            if (callback->context_type != RETRO_HW_CONTEXT_OPENGL &&
-                callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
-                callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
+            if (!desktopGl && callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION) return false;
+
+            unsigned requiredMajor = callback->context_type == RETRO_HW_CONTEXT_OPENGLES2 ? 2u : 3u;
+            unsigned requiredMinor = 0;
+            if (callback->version_major >= requiredMajor) {
+                requiredMajor = callback->version_major;
+                requiredMinor = callback->version_minor;
+            }
+            const bool versionAvailable = g.glesMajor > requiredMajor ||
+                (g.glesMajor == requiredMajor && g.glesMinor >= requiredMinor);
+            if (!versionAvailable) {
+                g.graphicsNegotiationError = "Core requires OpenGL ES " +
+                    std::to_string(requiredMajor) + "." + std::to_string(requiredMinor) +
+                    ", but Android created " + std::to_string(g.glesMajor) + "." +
+                    std::to_string(g.glesMinor);
+                __android_log_print(ANDROID_LOG_WARN, "EmuAllNative", "%s", g.graphicsNegotiationError.c_str());
+                return false;
+            }
             __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",
-                "Hardware render request: context=%d depth=%d stencil=%d version=%u.%u",
+                "Hardware render request accepted: context=%d depth=%d stencil=%d requested=%u.%u actual=%u.%u",
                 static_cast<int>(callback->context_type), callback->depth, callback->stencil,
-                callback->version_major, callback->version_minor);
-            callback->context_type = RETRO_HW_CONTEXT_OPENGLES3;
-            callback->version_major = 3;
-            callback->version_minor = 0;
+                callback->version_major, callback->version_minor, g.glesMajor, g.glesMinor);
+            // Some older PPSSPP Android builds report their GLES renderer as
+            // desktop OPENGL. Keep that already-working compatibility path
+            // isolated to PPSSPP instead of changing every core's request.
+            if (desktopGl) {
+                callback->context_type = RETRO_HW_CONTEXT_OPENGLES3;
+                callback->version_major = 3;
+                callback->version_minor = 0;
+            }
             // context_reset/context_destroy belong to the core. The frontend
             // invokes those callbacks after creating or losing its GL context;
             // replacing them with no-ops prevents cores from initializing GL
@@ -248,6 +286,7 @@ bool environment(unsigned command, void* data) {
             // and handles its own resource rebuild on context_reset().
             g.hardwareCallback = *callback;
             g.hardwareContextConfigured = true;
+            g.graphicsNegotiationError.clear();
             return true;
         }
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
@@ -375,7 +414,9 @@ bool environment(unsigned command, void* data) {
             // query this before SET_HW_RENDER and may otherwise interpret an
             // uninitialized enum as Vulkan/D3D and take an incompatible path.
             if (!data) return false;
-            *static_cast<retro_hw_context_type*>(data) = RETRO_HW_CONTEXT_OPENGLES3;
+            *static_cast<retro_hw_context_type*>(data) = is_core("dolphin")
+                ? RETRO_HW_CONTEXT_OPENGLES_VERSION
+                : RETRO_HW_CONTEXT_OPENGLES3;
             return true;
         case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
             // Vulkan has no libretro interface object in this first GLES
@@ -384,23 +425,14 @@ bool environment(unsigned command, void* data) {
             if (data) *static_cast<const retro_hw_render_interface**>(data) = nullptr;
             return false;
         case RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT:
-            if (data) {
-                auto* interfaceInfo = static_cast<retro_hw_render_context_negotiation_interface*>(data);
-                interfaceInfo->interface_version = 0;
-            }
-            return true;
+            return false;
         case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
-            // GLES cores may still advertise the negotiation hook for
-            // compatibility. There is no Vulkan negotiation object to expose
-            // here, but accepting the no-op keeps those cores on their GLES
-            // path instead of treating the frontend as unusable.
-            return true;
+            return false;
         case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER:
             return false;
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
         case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
-        case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
         case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
         case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
         case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY:
@@ -409,6 +441,12 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK:
         case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
             return true;
+        case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
+            // The core and frontend already execute on the one current
+            // GLSurfaceView context. Do not claim a second shared context that
+            // Android never created; cores treat a true response as a real
+            // lifetime/ownership guarantee.
+            return false;
         default:
             __android_log_print(ANDROID_LOG_DEBUG, "EmuAllNative", "Unsupported libretro environment command: %u", command);
             return false;
@@ -604,9 +642,18 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     // would erase it just before retro_load_game() negotiates hardware
     // rendering and the core would silently fall back to framebuffer 0.
     const uintptr_t requestedFramebuffer = g.hardwareFramebuffer;
+    const unsigned availableGlesMajor = g.glesMajor;
+    const unsigned availableGlesMinor = g.glesMinor;
     stop_session();
     g.hardwareFramebuffer = requestedFramebuffer;
+    g.glesMajor = availableGlesMajor;
+    g.glesMinor = availableGlesMinor;
     g.lastError.clear();
+    g.graphicsNegotiationError.clear();
+    {
+        std::lock_guard lock(g.logMutex);
+        g.lastCoreError.clear();
+    }
     g.hardwareRendering = hardwareRendering == JNI_TRUE;
     g.savePath = from_java(env, savePath); g.systemDirectory = from_java(env, systemDirectory);
     size_t slash = g.savePath.find_last_of('/');
@@ -664,14 +711,20 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     game.data = useFilesystemPath ? nullptr : g.rom.data();
     game.size = useFilesystemPath ? 0 : g.rom.size();
     if (!call_core_bool("retro_load_game", [&] { return g.api.loadGame(&game); })) {
-        if (g.lastError.empty())
-            g.lastError = "The selected core rejected this file";
+        if (g.lastError.empty()) {
+            std::lock_guard lock(g.logMutex);
+            g.lastError = g.lastCoreError.empty()
+                ? "The selected core rejected this file"
+                : g.lastCoreError;
+        }
         stop_session();
         return false;
     }
     if (g.hardwareRendering) {
         if (!g.hardwareContextConfigured || !g.hardwareCallback.context_reset) {
-            g.lastError = "The core did not negotiate a supported GLES3 graphics context";
+            g.lastError = g.graphicsNegotiationError.empty()
+                ? "The core did not negotiate a supported OpenGL ES graphics context"
+                : g.graphicsNegotiationError;
             stop_session();
             return false;
         }
@@ -713,6 +766,15 @@ extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_har
 
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setHardwareFramebuffer(JNIEnv*, jobject, jint framebuffer) {
     g.hardwareFramebuffer = framebuffer > 0 ? static_cast<uintptr_t>(framebuffer) : 0;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setGraphicsContextVersion(
+        JNIEnv*, jobject, jint major, jint minor) {
+    if (major < 2) return;
+    g.glesMajor = static_cast<unsigned>(major);
+    g.glesMinor = static_cast<unsigned>(std::max(0, static_cast<int>(minor)));
+    __android_log_print(ANDROID_LOG_INFO, "EmuAllNative", "Android OpenGL ES context: %u.%u",
+        g.glesMajor, g.glesMinor);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) {
@@ -774,4 +836,8 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
 }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_saveBattery(JNIEnv*, jobject) { save_battery(); }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_stop(JNIEnv*, jobject) { stop_session(); }
-extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_lastError(JNIEnv* env, jobject) { return env->NewStringUTF(g.lastError.c_str()); }
+extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_lastError(JNIEnv* env, jobject) {
+    if (!g.lastError.empty()) return env->NewStringUTF(g.lastError.c_str());
+    std::lock_guard lock(g.logMutex);
+    return env->NewStringUTF(g.lastCoreError.c_str());
+}

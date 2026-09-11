@@ -149,6 +149,30 @@ bool environment(unsigned command, void* data) {
         }
         case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
             *static_cast<bool*>(data) = false; return true;
+        case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+            // This frontend currently creates an ES 3 context for hardware
+            // cores.  Returning an initialized value is important: cores
+            // query this before SET_HW_RENDER and may otherwise interpret an
+            // uninitialized enum as Vulkan/D3D and take an incompatible path.
+            if (!data) return false;
+            *static_cast<retro_hw_context_type*>(data) = RETRO_HW_CONTEXT_OPENGLES3;
+            return true;
+        case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
+            // Vulkan has no libretro interface object in this first GLES
+            // hardware path.  Explicitly report it as unavailable rather
+            // than leaving the caller's output pointer untouched.
+            if (data) *static_cast<const retro_hw_render_interface**>(data) = nullptr;
+            return false;
+        case RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT:
+            if (data) {
+                auto* interfaceInfo = static_cast<retro_hw_render_context_negotiation_interface*>(data);
+                interfaceInfo->interface_version = 0;
+            }
+            return true;
+        case RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE:
+            return false;
+        case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER:
+            return false;
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
         case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
@@ -157,7 +181,9 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY:
         case RETRO_ENVIRONMENT_SET_MESSAGE:
             return true;
-        default: return false;
+        default:
+            __android_log_print(ANDROID_LOG_DEBUG, "EmuAllNative", "Unsupported libretro environment command: %u", command);
+            return false;
     }
 }
 
@@ -315,12 +341,25 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);
     g.api.init(); g.initialized = true;
+    // Some cores request hardware rendering from retro_init(), while others
+    // (including Mupen64Plus-Next) do it from retro_load_game().  Reset any
+    // context negotiated during init, then repeat the handshake after
+    // retro_load_game() so the core's callbacks are always invoked only after
+    // the game has requested them and the Android GL context is current.
     if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
     retro_system_info systemInfo{}; g.api.getSystemInfo(&systemInfo);
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();
     game.size = systemInfo.need_fullpath ? 0 : g.rom.size();
     if (!g.api.loadGame(&game)) { g.lastError = "The selected core rejected this file"; stop_session(); return false; }
+    if (g.hardwareRendering) {
+        if (!g.hardwareContextConfigured || !g.hardwareCallback.context_reset) {
+            g.lastError = "The N64 core did not negotiate a supported GLES3 graphics context";
+            stop_session();
+            return false;
+        }
+        g.hardwareCallback.context_reset();
+    }
     g.gameLoaded = true;
     retro_system_av_info av{}; g.api.getSystemAvInfo(&av); g.fps = av.timing.fps; g.sampleRate = av.timing.sample_rate;
     std::vector<uint8_t> save;

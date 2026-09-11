@@ -52,6 +52,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // The software texture path works on GLES3 as well, while the first
         // hardware core (Mupen64Plus-Next GLES3) requires an ES 3 context.
         setEGLContextClientVersion(3)
+        // Hardware libretro cores are allowed to request depth/stencil
+        // buffers in SET_HW_RENDER.  Ask Android for a config that satisfies
+        // the N64 renderer up front; the same config is harmless for the
+        // software texture path.
+        setEGLConfigChooser(8, 8, 8, 8, 24, 8)
         preserveEGLContextOnPause = true
         setRenderer(gameRenderer)
         renderMode = RENDERMODE_WHEN_DIRTY

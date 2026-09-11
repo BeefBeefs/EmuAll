@@ -179,7 +179,11 @@ class EmulationActivity : AppCompatActivity() {
         // flags. Stopping the native core here would turn that transient
         // window teardown into a permanent end-of-emulation. The session is
         // stopped only when the user actually leaves the emulation screen.
-        if (!isChangingConfigurations) surface.stop()
+        // A configuration transition can still report isChangingConfigurations
+        // as false on some Android window-manager paths. Only stop when this
+        // Activity is actually finishing; otherwise the native session must
+        // remain available to the new orientation/window.
+        if (isFinishing && !isChangingConfigurations) surface.stop()
         super.onDestroy()
     }
     companion object {

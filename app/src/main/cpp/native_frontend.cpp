@@ -530,6 +530,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_har
     if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_hardwareContextDestroy(JNIEnv*, jobject) {
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy) g.hardwareCallback.context_destroy();
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setHardwareFramebuffer(JNIEnv*, jobject, jint framebuffer) {
     g.hardwareFramebuffer = framebuffer > 0 ? static_cast<uintptr_t>(framebuffer) : 0;
 }

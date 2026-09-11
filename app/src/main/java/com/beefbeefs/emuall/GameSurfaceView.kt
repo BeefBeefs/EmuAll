@@ -453,6 +453,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
             if (hardwareRendering && hardwareSession != null) {
+                // A rotation may recreate the EGL surface without recreating
+                // the Activity. Tell the core that its old GL objects are no
+                // longer valid before rebuilding our target FBO, then reset
+                // the same running core against the new context.
+                if (hardwareStarted.get()) NativeCoreBridge.hardwareContextDestroy()
                 ensureHardwareTarget()
                 if (hardwareStarted.get()) NativeCoreBridge.hardwareContextReset()
             }
@@ -470,13 +475,6 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             if (coreName.contains("ppsspp")) {
                 hardwareTargetWidth = 480
                 hardwareTargetHeight = 272
-            } else if (coreName.contains("dolphin")) {
-                // Dolphin's native GameCube EFB is 640x528 at 1x internal
-                // resolution. Matching that height avoids the core drawing
-                // past the attachment while it presents through the libretro
-                // system framebuffer.
-                hardwareTargetWidth = 640
-                hardwareTargetHeight = 528
             } else {
                 // N64, Dreamcast, GameCube/Wii and Play! advertise a 4:3
                 // 640x480-style backbuffer. The core can still change its

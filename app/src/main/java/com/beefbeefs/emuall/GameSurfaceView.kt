@@ -42,6 +42,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var hardwareAudioRunning: AtomicBoolean? = null
     private var hardwareAudioThread: Thread? = null
     private var firstHardwarePresentation = true
+    private var hardwareFramePeriodNanos = 16_666_667L
+    private var hardwareNextFrameNanos = 0L
     private var statusCallback: ((String) -> Unit)? = null
     @Volatile private var glSurfaceWidth = 0
     @Volatile private var glSurfaceHeight = 0
@@ -88,6 +90,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             hardwareStartAttempted.set(false)
             hardwareStarted.set(false)
             firstHardwarePresentation = true
+            hardwareNextFrameNanos = 0L
             renderMode = RENDERMODE_CONTINUOUSLY
             requestRender()
             return
@@ -215,9 +218,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             statusCallback?.invoke(NativeCoreBridge.lastError())
             return
         }
+        val coreFps = NativeCoreBridge.framesPerSecond().takeIf { it.isFinite() && it >= 1.0 } ?: 60.0
+        hardwareFramePeriodNanos = (1_000_000_000.0 / coreFps).toLong().coerceAtLeast(1L)
+        hardwareNextFrameNanos = System.nanoTime()
         hardwareStarted.set(true)
         startHardwareAudio(NativeCoreBridge.sampleRate().coerceAtLeast(8000))
-        statusCallback?.invoke("${session.coreName} · ${session.videoBackend.label} hardware context · Starting")
+        NativeCoreBridge.diagnosticMarker("Hardware pacing target=${"%.4f".format(coreFps)} FPS")
+        statusCallback?.invoke("${session.coreName} · ${session.videoBackend.label} hardware context · Starting · target ${"%.1f".format(coreFps)} FPS")
     }
 
     private fun startHardwareAudio(sampleRate: Int) {
@@ -269,16 +276,20 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             gameRenderer.presentHardwareFrame(viewport)
             return
         }
-        if (gameRenderer.hasHardwareTarget()) {
-            gameRenderer.bindHardwareTarget()
-            GLES20.glViewport(0, 0, gameRenderer.hardwareWidth(), gameRenderer.hardwareHeight())
-        } else {
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            GLES20.glViewport(0, 0, width, height)
-        }
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
         startHardwareSessionIfNeeded()
         if (!hardwareStarted.get()) return
+
+        // GLSurfaceView follows the display refresh rate, which is 120 Hz on
+        // many phones. Advance the core only at its advertised rate and
+        // present the last completed frame on intervening display refreshes.
+        // Without this gate, 59.94 Hz Dolphin content advances at 120 Hz and
+        // alternating menu/text fields appear to flicker or disappear.
+        val frameStartNanos = System.nanoTime()
+        if (!firstHardwarePresentation && frameStartNanos < hardwareNextFrameNanos) {
+            gameRenderer.presentHardwareFrame(viewport)
+            return
+        }
+
         val session = hardwareSession ?: return
         val action = pendingAction.getAndSet(ACTION_NONE)
         var saveThumbnail: String? = null
@@ -311,7 +322,9 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES20.glViewport(0, 0, width, height)
         }
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
+        // The framebuffer belongs to the core for the duration of the
+        // session. Do not clear it here: Play!, Dolphin and other renderers
+        // may preserve or update only part of their output between frames.
         if (!NativeCoreBridge.runFrame()) {
             running.set(false)
             statusCallback?.invoke(NativeCoreBridge.lastError().ifBlank { "The native core stopped unexpectedly" })
@@ -322,6 +335,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         if (firstHardwarePresentation) {
             NativeCoreBridge.diagnosticMarker("First hardware frame presented")
             firstHardwarePresentation = false
+        }
+        hardwareNextFrameNanos += hardwareFramePeriodNanos
+        val frameCompletedNanos = System.nanoTime()
+        if (hardwareNextFrameNanos < frameCompletedNanos - hardwareFramePeriodNanos * 2) {
+            hardwareNextFrameNanos = frameCompletedNanos
         }
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
     }
@@ -361,6 +379,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         hardwareAudioThread = null
         hardwareAudioRunning = null
         if (hardwareStarted.compareAndSet(true, false)) NativeCoreBridge.stop()
+        hardwareNextFrameNanos = 0L
         hardwareSession = null
     }
 

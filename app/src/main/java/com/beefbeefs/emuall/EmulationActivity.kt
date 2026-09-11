@@ -3,7 +3,9 @@ package com.beefbeefs.emuall
 import android.content.res.Configuration
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.Menu
 import android.view.MotionEvent
+import android.view.PopupMenu
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
@@ -24,14 +26,20 @@ class EmulationActivity : AppCompatActivity() {
         surface.start("libmgba_libretro.so", rom, save, filesDir.absolutePath) { status ->
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
-        if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad()
+        if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
         findViewById<Button>(R.id.menuButton).setOnClickListener { finish() }
         findViewById<Button>(R.id.pauseButton).setOnClickListener { button ->
             surface.setPaused(!surface.isPaused()); (button as Button).text = if (surface.isPaused()) "Resume" else "Pause"
         }
         findViewById<Button>(R.id.resetButton).setOnClickListener { surface.resetGame() }
-        findViewById<Button>(R.id.quickSaveButton).setOnClickListener { surface.quickSave() }
-        findViewById<Button>(R.id.quickLoadButton).setOnClickListener { surface.quickLoad() }
+        findViewById<Button>(R.id.quickSaveButton).apply {
+            setOnClickListener { surface.quickSave() }
+            setOnLongClickListener { showStateMenu(this, true); true }
+        }
+        findViewById<Button>(R.id.quickLoadButton).apply {
+            setOnClickListener { surface.quickLoad() }
+            setOnLongClickListener { showStateMenu(this, false); true }
+        }
         findViewById<Button>(R.id.fastButton).setOnClickListener { button -> (button as Button).text = if (surface.toggleFastForward()) "FF 3×" else "FF" }
     }
 
@@ -55,6 +63,16 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun showStateMenu(anchor: View, save: Boolean) {
+        PopupMenu(this, anchor).apply {
+            (1..3).forEach { slot -> menu.add(Menu.NONE, slot, slot, "${if (save) "Save" else "Load"} Slot $slot") }
+            setOnMenuItemClickListener { item ->
+                if (save) surface.quickSave(item.itemId) else surface.quickLoad(item.itemId)
+                true
+            }
+        }.show()
+    }
     private fun bindControls() {
         mapOf(R.id.upButton to 4, R.id.downButton to 5, R.id.leftButton to 6, R.id.rightButton to 7,
             R.id.aButton to 8, R.id.bButton to 0, R.id.lButton to 10, R.id.rButton to 11, R.id.selectButton to 2, R.id.startButton to 3)
@@ -74,5 +92,6 @@ class EmulationActivity : AppCompatActivity() {
         const val EXTRA_ROM = "rom"
         const val EXTRA_SAVE = "save"
         const val EXTRA_AUTO_LOAD = "auto_load"
+        const val EXTRA_AUTO_LOAD_SLOT = "auto_load_slot"
     }
 }

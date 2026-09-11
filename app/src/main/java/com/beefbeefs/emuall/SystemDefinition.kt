@@ -20,7 +20,7 @@ enum class IntegrationTier(val label: String) {
 object Systems {
     val all = listOf(
         SystemDefinition("gba", "GBA", "Game Boy Advance", "mGBA", setOf("gba", "zip", "7z")),
-        SystemDefinition("gbc", "GB / GBC", "Game Boy / Color", "Gambatte", setOf("gb", "gbc", "zip", "7z")),
+        SystemDefinition("gbc", "GB / GBC", "Game Boy / Color", "mGBA", setOf("gb", "gbc", "zip", "7z")),
         SystemDefinition("nes", "NES", "NES / Famicom", "FCEUmm", setOf("nes", "fds", "unf", "unif", "zip", "7z")),
         SystemDefinition("snes", "SNES", "Super Nintendo", "Snes9x", setOf("sfc", "smc", "fig", "gd3", "gd7", "dx2", "bsx", "swc", "zip", "7z")),
         SystemDefinition("genesis", "GENESIS", "Genesis / Mega Drive", "Genesis Plus GX", setOf("md", "gen", "bin", "smd", "zip", "7z")),

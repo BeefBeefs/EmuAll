@@ -11,8 +11,8 @@ android {
         applicationId = "com.beefbeefs.emuall"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.4.0"
 
         externalNativeBuild {
             cmake {
@@ -32,6 +32,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            val stableDebugKey = rootProject.file("ci/emuall-debug.keystore")
+            if (stableDebugKey.isFile) {
+                signingConfig = signingConfigs.getByName("debug").apply {
+                    storeFile = stableDebugKey
+                    storePassword = "android"
+                    keyAlias = "androiddebugkey"
+                    keyPassword = "android"
+                }
+            }
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -53,4 +64,6 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.9")
 }

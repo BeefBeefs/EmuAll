@@ -26,6 +26,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private val paused = AtomicBoolean(false)
     private val speed = AtomicInteger(1)
     private val pendingAction = AtomicInteger(ACTION_NONE)
+    private val pendingSlot = AtomicInteger(1)
     private var emulationThread: Thread? = null
     private var inputMask = 0
 
@@ -75,7 +76,6 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             }
             post { onStatus("mGBA · Starting · target ${"%.1f".format(coreFps)} FPS") }
             val baseFrameNanos = (1_000_000_000.0 / coreFps).toLong()
-            val quickStatePath = "$savePath.quick.state"
             var deadline = System.nanoTime()
             var measurementStart = deadline
             var measuredFrames = 0
@@ -85,6 +85,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                 while (running.get()) {
                     val action = pendingAction.getAndSet(ACTION_NONE)
                     if (action != ACTION_NONE) {
+                        val slot = pendingSlot.get().coerceIn(1, 3)
+                        val statePath = statePath(savePath, slot)
                         val message = when (action) {
                             ACTION_RESET -> {
                                 NativeCoreBridge.reset()
@@ -92,14 +94,14 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                                 requestRender()
                                 "Game reset"
                             }
-                            ACTION_QUICK_SAVE -> if (NativeCoreBridge.quickSave(quickStatePath)) {
-                                captureStateThumbnail("$quickStatePath.png")
-                                "Quick save created"
+                            ACTION_QUICK_SAVE -> if (NativeCoreBridge.quickSave(statePath)) {
+                                captureStateThumbnail("$statePath.png")
+                                "Saved Slot $slot"
                             } else NativeCoreBridge.lastError()
-                            ACTION_QUICK_LOAD -> if (NativeCoreBridge.quickLoad(quickStatePath)) {
+                            ACTION_QUICK_LOAD -> if (NativeCoreBridge.quickLoad(statePath)) {
                                 NativeCoreBridge.runFrame()
                                 requestRender()
-                                "Quick save loaded"
+                                "Loaded Slot $slot"
                             } else NativeCoreBridge.lastError()
                             else -> ""
                         }
@@ -186,13 +188,15 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     fun isPaused() = paused.get()
     fun toggleFastForward(): Boolean { val enabled = speed.get() == 1; speed.set(if (enabled) 3 else 1); return enabled }
     fun resetGame() = pendingAction.set(ACTION_RESET)
-    fun quickSave() = pendingAction.set(ACTION_QUICK_SAVE)
-    fun quickLoad() = pendingAction.set(ACTION_QUICK_LOAD)
+    fun quickSave(slot: Int = 1) { pendingSlot.set(slot.coerceIn(1, 3)); pendingAction.set(ACTION_QUICK_SAVE) }
+    fun quickLoad(slot: Int = 1) { pendingSlot.set(slot.coerceIn(1, 3)); pendingAction.set(ACTION_QUICK_LOAD) }
     fun setButton(id: Int, down: Boolean) = synchronized(this) {
         inputMask = if (down) inputMask or (1 shl id) else inputMask and (1 shl id).inv()
         NativeCoreBridge.setInputMask(inputMask)
     }
     fun stop() { running.set(false); emulationThread?.join(2000); emulationThread = null }
+
+    private fun statePath(savePath: String, slot: Int) = if (slot == 1) "$savePath.quick.state" else "$savePath.state.$slot"
 
     private class GameRenderer : Renderer {
         private val frame = ByteBuffer.allocateDirect(1024 * 1024 * 4).order(ByteOrder.nativeOrder())

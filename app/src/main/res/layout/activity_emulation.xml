@@ -14,8 +14,8 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="46dp" android:gravity="center" android:orientation="horizontal">
             <Button android:id="@+id/pauseButton" style="@style/EmuButton.Toolbar" android:text="Pause" />
             <Button android:id="@+id/fastButton" style="@style/EmuButton.Toolbar" android:text="FF" />
-            <Button android:id="@+id/quickSaveButton" style="@style/EmuButton.Toolbar" android:text="Save" />
-            <Button android:id="@+id/quickLoadButton" style="@style/EmuButton.Toolbar" android:text="Load" />
+            <Button android:id="@+id/quickSaveButton" style="@style/EmuButton.Toolbar" android:contentDescription="Quick save Slot 1; long press for other slots" android:text="Save" />
+            <Button android:id="@+id/quickLoadButton" style="@style/EmuButton.Toolbar" android:contentDescription="Quick load Slot 1; long press for other slots" android:text="Load" />
             <Button android:id="@+id/resetButton" style="@style/EmuButton.Toolbar" android:text="Reset" />
             <Button android:id="@+id/menuButton" style="@style/EmuButton.Toolbar" android:text="Menu" />
         </LinearLayout>

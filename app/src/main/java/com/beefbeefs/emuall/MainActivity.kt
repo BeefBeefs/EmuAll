@@ -20,9 +20,14 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import org.apache.commons.compress.archivers.sevenz.SevenZFile
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.text.DateFormat
 import java.util.Date
+import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
     private lateinit var recentStore: RecentGameStore
@@ -109,7 +114,7 @@ class MainActivity : AppCompatActivity() {
         runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         recentStore.add(RecentGame(system.id, name, uri, System.currentTimeMillis()))
         renderSystemPage()
-        if (system.id == "gba" && extension == "gba") launchGame(uri, name)
+        if (system.id in setOf("gba", "gbc")) launchGame(uri, name, system.id)
         else Toast.makeText(this, "$name added. ${system.coreName} integration is not playable yet.", Toast.LENGTH_LONG).show()
     }
 
@@ -135,7 +140,7 @@ class MainActivity : AppCompatActivity() {
             }
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(actionButton("Play", true) {
-                if (game.systemId == "gba" && game.name.substringAfterLast('.', "").lowercase() == "gba") launchGame(game.uri, game.name)
+                if (game.systemId in setOf("gba", "gbc")) launchGame(game.uri, game.name, game.systemId)
                 else Toast.makeText(this, "${selectedSystem.coreName} is not integrated yet.", Toast.LENGTH_SHORT).show()
             })
             row.addView(actionButton("Remove", false) {
@@ -150,38 +155,45 @@ class MainActivity : AppCompatActivity() {
     private fun renderStates() {
         stateSection.removeAllViews()
         val games = recentStore.load().filter { it.systemId == selectedSystem.id }
-        val savedGames = games.map { it to localFiles(it).state }.filter { it.second.isFile }
-        stateSection.addView(sectionHeading("SAVE STATES", "${savedGames.size} QUICK SAVES"))
-        if (savedGames.isEmpty()) {
-            val copy = if (selectedSystem.id == "gba") "Quick Save during a game to create a screenshot-backed state here."
+        val savedCount = games.sumOf { game -> (1..3).count { stateFile(localFiles(game), it).isFile } }
+        stateSection.addView(sectionHeading("SAVE STATES", "$savedCount STATES"))
+        if (savedCount == 0) {
+            val copy = if (selectedSystem.id in setOf("gba", "gbc")) "Quick Save during a game to create a screenshot-backed state here."
             else "Save states will appear here when this system's native core is added."
             stateSection.addView(emptyCard(copy))
             return
         }
-        savedGames.forEach { (game, state) ->
+        games.filter { game -> (1..3).any { stateFile(localFiles(game), it).isFile } }.forEach { game ->
             val local = localFiles(game)
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                background = getDrawable(R.drawable.panel)
+            stateSection.addView(label(game.name.substringBeforeLast('.'), 13f, R.color.text_primary, true).apply { setPadding(0, dp(12), 0, dp(5)) })
+            val slots = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+            (1..3).forEach { slot ->
+                val state = stateFile(local, slot)
+                val slotCard = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(7), dp(7), dp(7), dp(7))
+                    background = getDrawable(R.drawable.panel)
+                }
+                val thumbnail = ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    setBackgroundColor(Color.BLACK)
+                    contentDescription = "${game.name} Slot $slot screenshot"
+                    if (thumbnailFile(state).isFile) setImageBitmap(BitmapFactory.decodeFile(thumbnailFile(state).absolutePath))
+                }
+                slotCard.addView(thumbnail, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)))
+                slotCard.addView(label(if (state.isFile) "Slot $slot" else "Slot $slot · Empty", 10f, if (state.isFile) R.color.text_primary else R.color.text_muted, true).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(4), 0, dp(3))
+                })
+                if (state.isFile) {
+                    slotCard.addView(actionButton("Load", true) { launchGame(game.uri, game.name, game.systemId, true, slot) })
+                    slotCard.addView(actionButton("Delete", false) {
+                        state.delete(); thumbnailFile(state).delete(); renderSystemPage()
+                    })
+                }
+                slots.addView(slotCard, LinearLayout.LayoutParams(0, dp(115), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
             }
-            val thumbnail = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.BLACK)
-                contentDescription = "${game.name} quick-save screenshot"
-                if (local.thumbnail.isFile) setImageBitmap(BitmapFactory.decodeFile(local.thumbnail.absolutePath))
-            }
-            card.addView(thumbnail, LinearLayout.LayoutParams(dp(112), dp(75)))
-            val info = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), 0, dp(8), 0)
-                addView(label(game.name.substringBeforeLast('.'), 13f, R.color.text_primary, true))
-                addView(label("Quick Save · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state.lastModified()))}", 10f, R.color.text_muted, false))
-            }
-            card.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            card.addView(actionButton("Load", true) { launchGame(game.uri, game.name, autoLoad = true) })
-            stateSection.addView(card, cardParams())
+            stateSection.addView(slots, cardParams())
         }
     }
 
@@ -189,30 +201,27 @@ class MainActivity : AppCompatActivity() {
         val safeName = game.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val key = game.uri.toString().hashCode().toUInt().toString(16)
         val base = safeName.substringBeforeLast('.')
-        val save = File(filesDir, "saves/gba/${base}_$key.sav")
-        val state = File("${save.absolutePath}.quick.state")
-        return LocalFiles(save, state, File("${state.absolutePath}.png"))
+        val save = File(filesDir, "saves/${game.systemId}/${base}_$key.sav")
+        return LocalFiles(save)
     }
 
-    private fun launchGame(uri: Uri, name: String, autoLoad: Boolean = false) {
+    private fun stateFile(local: LocalFiles, slot: Int) = File(if (slot == 1) "${local.save.absolutePath}.quick.state" else "${local.save.absolutePath}.state.$slot")
+    private fun thumbnailFile(state: File) = File("${state.absolutePath}.png")
+
+    private fun launchGame(uri: Uri, name: String, systemId: String = selectedSystem.id, autoLoad: Boolean = false, autoLoadSlot: Int = 1) {
         Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()
         Thread {
             runCatching {
-                val romDirectory = File(filesDir, "roms/gba").apply { mkdirs() }
-                val local = localFiles(RecentGame("gba", name, uri, 0))
+                val romDirectory = File(filesDir, "roms/$systemId").apply { mkdirs() }
+                val local = localFiles(RecentGame(systemId, name, uri, 0))
                 local.save.parentFile?.mkdirs()
-                val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-                val key = uri.toString().hashCode().toUInt().toString(16)
-                val rom = File(romDirectory, "${key}_$safeName")
-                contentResolver.openInputStream(uri).use { input ->
-                    requireNotNull(input) { "Android could not open this game." }
-                    rom.outputStream().use { output -> input.copyTo(output) }
-                }
+                val rom = prepareRom(uri, name, systemId, romDirectory)
                 runOnUiThread {
                     startActivity(Intent(this, EmulationActivity::class.java).apply {
                         putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
                         putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
                         putExtra(EmulationActivity.EXTRA_AUTO_LOAD, autoLoad)
+                        putExtra(EmulationActivity.EXTRA_AUTO_LOAD_SLOT, autoLoadSlot)
                     })
                 }
             }.onFailure { error ->
@@ -220,6 +229,81 @@ class MainActivity : AppCompatActivity() {
             }
         }.start()
     }
+
+    private fun prepareRom(uri: Uri, name: String, systemId: String, romDirectory: File): File {
+        val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+        val key = uri.toString().hashCode().toUInt().toString(16)
+        val source = File(romDirectory, "${key}_$safeName")
+        contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Android could not open this game." }
+            source.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
+        }
+        return when (name.substringAfterLast('.', "").lowercase()) {
+            "zip" -> extractZip(source, key, systemId, romDirectory)
+            "7z" -> extractSevenZip(source, key, systemId, romDirectory)
+            else -> source
+        }
+    }
+
+    private fun extractZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+        ZipInputStream(BufferedInputStream(FileInputStream(source))).use { archive ->
+            while (true) {
+                val entry = archive.nextEntry ?: break
+                if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
+                    val output = File(outputDirectory, "${key}_${safeEntryName(entry.name)}")
+                    writeLimited(archive, output)
+                    return output
+                }
+            }
+        }
+        throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the ZIP.")
+    }
+
+    private fun extractSevenZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+        SevenZFile(source).use { archive ->
+            while (true) {
+                val entry = archive.nextEntry ?: break
+                if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
+                    require(entry.size <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                    val output = File(outputDirectory, "${key}_${safeEntryName(entry.name)}")
+                    FileOutputStream(output).use { destination ->
+                        val buffer = ByteArray(BUFFER_SIZE)
+                        var total = 0L
+                        while (true) {
+                            val read = archive.read(buffer)
+                            if (read <= 0) break
+                            total += read
+                            require(total <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                            destination.write(buffer, 0, read)
+                        }
+                    }
+                    return output
+                }
+            }
+        }
+        throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the 7z archive.")
+    }
+
+    private fun writeLimited(input: java.io.InputStream, output: File) {
+        FileOutputStream(output).use { destination ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                total += read
+                require(total <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                destination.write(buffer, 0, read)
+            }
+        }
+    }
+
+    private fun isSupportedEntry(name: String, systemId: String): Boolean {
+        val extension = name.substringAfterLast('.', "").lowercase()
+        return extension in (Systems.byId(systemId)?.extensions ?: emptySet()) && extension !in setOf("zip", "7z")
+    }
+
+    private fun safeEntryName(name: String) = name.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._ -]"), "_")
 
     private fun displayName(uri: Uri): String {
         contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -285,9 +369,11 @@ class MainActivity : AppCompatActivity() {
     private fun supports(system: SystemDefinition) = deviceGlesVersion >= system.minimumGles
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    private data class LocalFiles(val save: File, val state: File, val thumbnail: File)
+    private data class LocalFiles(val save: File)
 
     companion object {
         private const val PICK_GAME = 1001
+        private const val BUFFER_SIZE = 64 * 1024
+        private const val MAX_ROM_BYTES = 128L * 1024L * 1024L
     }
 }

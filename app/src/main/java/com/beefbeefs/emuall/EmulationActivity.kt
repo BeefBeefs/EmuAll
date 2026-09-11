@@ -7,7 +7,6 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
 
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
@@ -18,7 +17,7 @@ class EmulationActivity : AppCompatActivity() {
         val rom = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         val save = intent.getStringExtra(EXTRA_SAVE) ?: return finish()
         bindControls()
-        surface.start(File(applicationInfo.nativeLibraryDir, "mgba_libretro.so").absolutePath, rom, save, filesDir.absolutePath) { error ->
+        surface.start("libmgba_libretro.so", rom, save, filesDir.absolutePath) { error ->
             findViewById<TextView>(R.id.sessionStatus).text = error ?: "mGBA · Running"
         }
         findViewById<Button>(R.id.menuButton).setOnClickListener { finish() }

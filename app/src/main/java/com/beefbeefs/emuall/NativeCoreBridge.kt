@@ -2,6 +2,7 @@ package com.beefbeefs.emuall
 
 object NativeCoreBridge {
     init {
+        System.loadLibrary("mgba_libretro")
         System.loadLibrary("emuall_frontend")
     }
 

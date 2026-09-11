@@ -19,6 +19,7 @@ set(USE_DISCORD_RPC OFF CACHE BOOL "" FORCE)
 set(USE_LIBZIP OFF CACHE BOOL "" FORCE)
 set(USE_LZMA OFF CACHE BOOL "" FORCE)
 add_subdirectory(cores/mgba mgba-build EXCLUDE_FROM_ALL)
+set_target_properties(mgba_libretro PROPERTIES PREFIX "lib")
 
 add_library(emuall_frontend SHARED native_frontend.cpp)
 add_dependencies(emuall_frontend mgba_libretro)

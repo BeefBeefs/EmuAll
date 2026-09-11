@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
+    private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); setContentView(R.layout.activity_emulation)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -22,8 +23,18 @@ class EmulationActivity : AppCompatActivity() {
         applySessionLayout(resources.configuration.orientation)
         val rom = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         val save = intent.getStringExtra(EXTRA_SAVE) ?: return finish()
+        val coreLibrary = intent.getStringExtra(EXTRA_CORE_LIBRARY) ?: "libmgba_libretro.so"
+        val coreName = intent.getStringExtra(EXTRA_CORE_NAME) ?: "libretro core"
+        val systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
+        controllerMapping = ControllerMappingStore(this).mappingFor(systemId)
+        val coreLoadError = runCatching { NativeCoreBridge.ensureCoreLoaded(coreLibrary) }.exceptionOrNull()
+        if (coreLoadError != null) {
+            findViewById<TextView>(R.id.sessionStatus).text = "Could not load $coreName: ${coreLoadError.message ?: coreLoadError.javaClass.simpleName}"
+            finish()
+            return
+        }
         bindControls()
-        surface.start("libmgba_libretro.so", rom, save, filesDir.absolutePath) { status ->
+        surface.start(coreLibrary, rom, save, filesDir.absolutePath, coreName) { status ->
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
@@ -81,9 +92,7 @@ class EmulationActivity : AppCompatActivity() {
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> surface.setButton(buttonId, false) }; true } }
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val id = when (event.keyCode) { KeyEvent.KEYCODE_DPAD_UP -> 4; KeyEvent.KEYCODE_DPAD_DOWN -> 5; KeyEvent.KEYCODE_DPAD_LEFT -> 6; KeyEvent.KEYCODE_DPAD_RIGHT -> 7
-            KeyEvent.KEYCODE_BUTTON_A -> 8; KeyEvent.KEYCODE_BUTTON_B -> 0; KeyEvent.KEYCODE_BUTTON_L1 -> 10; KeyEvent.KEYCODE_BUTTON_R1 -> 11
-            KeyEvent.KEYCODE_BUTTON_SELECT -> 2; KeyEvent.KEYCODE_BUTTON_START -> 3; else -> null }
+        val id = controllerMapping[event.keyCode]
         if (id != null) { surface.setButton(id, event.action == KeyEvent.ACTION_DOWN); return true }
         return super.dispatchKeyEvent(event)
     }
@@ -91,6 +100,9 @@ class EmulationActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_ROM = "rom"
         const val EXTRA_SAVE = "save"
+        const val EXTRA_CORE_LIBRARY = "core_library"
+        const val EXTRA_CORE_NAME = "core_name"
+        const val EXTRA_SYSTEM_ID = "system_id"
         const val EXTRA_AUTO_LOAD = "auto_load"
         const val EXTRA_AUTO_LOAD_SLOT = "auto_load_slot"
     }

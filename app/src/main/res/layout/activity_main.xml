@@ -57,7 +57,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="NATIVE ENGINE · BUILD 6"
+                    android:text="NATIVE ENGINE · BUILD 7"
                     android:textColor="@color/accent"
                     android:textSize="12sp"
                     android:textStyle="bold" />
@@ -133,6 +133,16 @@
                     android:layout_marginTop="14dp"
                     android:background="@drawable/button_primary"
                     android:text="Choose Game" />
+
+                <Button
+                    android:id="@+id/controllerMappingButton"
+                    style="@style/EmuButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/button_secondary"
+                    android:enabled="false"
+                    android:text="Controller Mapping · No Controller" />
             </LinearLayout>
 
             <LinearLayout

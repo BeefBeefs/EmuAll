@@ -172,7 +172,7 @@ bool load_api(const char* path) {
     g.api.handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!g.api.handle) {
         const char* error = dlerror();
-        g.lastError = std::string("Could not load mGBA: ") + (error ? error : "unknown error");
+        g.lastError = std::string("Could not load libretro core: ") + (error ? error : "unknown error");
         return false;
     }
 #define LOAD(symbol, field) if (!get_symbol(symbol, g.api.field)) return false
@@ -215,7 +215,7 @@ bool quick_save(const std::string& path) {
     if (!size) { g.lastError = "This core does not support save states"; return false; }
     std::vector<uint8_t> state(size);
     if (!g.api.serialize(state.data(), state.size())) {
-        g.lastError = "mGBA could not create a save state";
+        g.lastError = "The core could not create a save state";
         return false;
     }
     std::string temporaryPath = path + ".tmp";
@@ -280,7 +280,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();
     game.size = systemInfo.need_fullpath ? 0 : g.rom.size();
-    if (!g.api.loadGame(&game)) { g.lastError = "mGBA rejected this file"; stop_session(); return false; }
+    if (!g.api.loadGame(&game)) { g.lastError = "The selected core rejected this file"; stop_session(); return false; }
     g.gameLoaded = true;
     retro_system_av_info av{}; g.api.getSystemAvInfo(&av); g.fps = av.timing.fps; g.sampleRate = av.timing.sample_rate;
     std::vector<uint8_t> save;

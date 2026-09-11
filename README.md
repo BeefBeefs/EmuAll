@@ -2,7 +2,7 @@
 
 EmuAll is an Android-native multi-system emulator frontend inspired by the emulator portion of PixelPalette/PixelPlayer. It does not use a WebView or JavaScript emulator runtime.
 
-## Build 6
+## Build 7
 
 - Native Kotlin Android UI using the PixelPlayer dark green/orange visual language
 - Extensible system catalog: the original GBA-through-Saturn lineup plus Dreamcast/NAOMI, PS2, GameCube/Wii, and a guarded future Xbox entry
@@ -24,6 +24,8 @@ Build 4 restores full-speed emulation in the installable debug APK by explicitly
 Build 5 adds persistent per-game Quick Save and Quick Load controls to the session toolbar. Save-state commands are executed safely between emulated frames, including while paused, and the Android package now contains only the `arm64-v8a` binaries needed by the target phone. In landscape, the virtual controls move beside the game so the shorter screen dimension enlarges the viewport instead of collapsing it. The launcher now mirrors PixelPlayer's compact system dropdown and system-specific workspace, with separate recent-game and screenshot-backed quick-state cards.
 
 Build 6 adds three screenshot-backed save-state slots per game, per-game/system state pages, ZIP and 7z extraction, and Game Boy/Game Boy Color launching through the already-compiled mGBA core. CI now uses a stable development signing key so test APKs can be installed as updates. This key is for local development builds only and is not a Play Store release credential.
+
+Build 7 makes the launcher capability-driven. A core registry now owns the mapping between systems and bundled native libraries, so adding a validated Android core does not require another hard-coded launch path. The session receives its selected core and reports its name generically. Physical controller mappings are stored per system; the launcher listens for Android input-device changes, enables the mapping screen only when a gamepad or joystick is detected, and otherwise keeps the control visibly disabled. Each mapping row can be rebound by pressing a controller button and reset to the defaults.
 
 The session toolbar saves and loads Slot 1 with a tap; long-press either button to choose Slots 1–3.
 
@@ -47,5 +49,6 @@ This single-session design carries forward PixelPlayer's rule that launching one
 3. Add battery saves plus three per-game save-state slots and thumbnails.
 4. Add archive extraction and folder-library scanning.
 5. Add remaining cores in compatibility tiers, testing one system at a time.
+6. Extend the registry with validated cores and system-specific graphics/input capabilities.
 
 The catalog is intentionally capability-driven rather than capped to a hard-coded console generation. Software-video cores use the common OpenGL texture path. Dreamcast, PS2, and GameCube/Wii are tagged as hardware-rendered cores and receive runtime GPU checks. A system is exposed as playable only when its Android core and required graphics API have both been validated. Original Xbox therefore remains a guarded future entry instead of claiming support that Android cannot currently provide.

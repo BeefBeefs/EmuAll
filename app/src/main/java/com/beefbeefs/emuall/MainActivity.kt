@@ -10,6 +10,7 @@ import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.StatFs
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.InputDevice
@@ -21,6 +22,7 @@ import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -39,6 +41,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recentSection: LinearLayout
     private lateinit var stateSection: LinearLayout
     private lateinit var controllerButton: Button
+    private lateinit var preparationPanel: LinearLayout
+    private lateinit var preparationTitle: TextView
+    private lateinit var preparationStatus: TextView
+    private lateinit var preparationProgress: ProgressBar
+    private var preparationInProgress = false
     private var selectedSystem = Systems.all.first()
     private val controllerMappingStore by lazy { ControllerMappingStore(this) }
     private val inputManager by lazy { getSystemService(INPUT_SERVICE) as InputManager }
@@ -58,6 +65,10 @@ class MainActivity : AppCompatActivity() {
         recentSection = findViewById(R.id.recentSection)
         stateSection = findViewById(R.id.stateSection)
         controllerButton = findViewById(R.id.controllerMappingButton)
+        preparationPanel = findViewById(R.id.preparationPanel)
+        preparationTitle = findViewById(R.id.preparationTitle)
+        preparationStatus = findViewById(R.id.preparationStatus)
+        preparationProgress = findViewById(R.id.preparationProgress)
         controllerButton.setOnClickListener { showControllerMappingDialog() }
         findViewById<TextView>(R.id.nativeStatus).text = runCatching {
             "${NativeCoreBridge.frontendVersion()} · OpenGL ES fallback ready"
@@ -252,18 +263,34 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             return
         }
-        Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()
+        if (preparationInProgress) {
+            Toast.makeText(this, "A game is already being prepared.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        preparationInProgress = true
+        showPreparation(name)
+        val report = createPreparationReporter()
         Thread {
-            runCatching {
+            try {
                 val romDirectory = File(filesDir, "roms/$systemId").apply { mkdirs() }
                 val recent = recentStore.load().firstOrNull { it.uri == uri }
                 val local = localFiles(RecentGame(systemId, name, uri, 0))
                 local.save.parentFile?.mkdirs()
+                report("Checking file and storage", 0L, -1L)
                 val cached = recent?.cachedRomPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
-                val rom = cached ?: prepareRom(uri, name, systemId, romDirectory)
+                val rom = if (cached != null) {
+                    report("Using prepared game copy", 1L, 1L)
+                    cached
+                } else {
+                    prepareRom(uri, name, systemId, romDirectory, report)
+                }
+                postPreparation("Validating ${core.displayName}", -1L, -1L)
                 validatePreparedRom(rom, systemId)
                 recentStore.touch(uri, rom.absolutePath)
+                postPreparation("Launching ${core.displayName}", -1L, -1L)
                 runOnUiThread {
+                    preparationInProgress = false
+                    preparationPanel.visibility = View.GONE
                     startActivity(Intent(this, EmulationActivity::class.java).apply {
                         putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
                         putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
@@ -275,17 +302,89 @@ class MainActivity : AppCompatActivity() {
                         putExtra(EmulationActivity.EXTRA_AUTO_LOAD_SLOT, autoLoadSlot)
                     })
                 }
-            }.onFailure { error ->
-                runOnUiThread { Toast.makeText(this, error.message ?: "Could not prepare game.", Toast.LENGTH_LONG).show() }
+            } catch (error: Throwable) {
+                val message = preparationErrorMessage(error)
+                runOnUiThread {
+                    preparationInProgress = false
+                    showPreparationFailure(name, message)
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
             }
         }.start()
     }
 
-    private fun prepareRom(uri: Uri, name: String, systemId: String, romDirectory: File): File {
+    private fun showPreparation(name: String) {
+        preparationPanel.visibility = View.VISIBLE
+        preparationTitle.text = "Preparing $name"
+        preparationStatus.text = "Starting…"
+        preparationProgress.visibility = View.VISIBLE
+        preparationProgress.isIndeterminate = true
+        preparationProgress.progress = 0
+    }
+
+    private fun showPreparationFailure(name: String, message: String) {
+        preparationPanel.visibility = View.VISIBLE
+        preparationTitle.text = "Could not start $name"
+        preparationProgress.visibility = View.GONE
+        preparationStatus.text = message
+    }
+
+    private fun updatePreparation(label: String, completed: Long, total: Long) {
+        preparationPanel.visibility = View.VISIBLE
+        preparationProgress.visibility = View.VISIBLE
+        if (total > 0L) {
+            val safeCompleted = completed.coerceIn(0L, total)
+            val percent = ((safeCompleted * 100L) / total).toInt().coerceIn(0, 100)
+            preparationProgress.isIndeterminate = false
+            preparationProgress.progress = percent
+            preparationStatus.text = "$label · $percent%"
+        } else {
+            preparationProgress.isIndeterminate = true
+            preparationStatus.text = label
+        }
+    }
+
+    private fun postPreparation(label: String, completed: Long, total: Long) {
+        runOnUiThread {
+            if (preparationInProgress) updatePreparation(label, completed, total)
+        }
+    }
+
+    /** Throttle progress callbacks so a large image does not flood the main thread. */
+    private fun createPreparationReporter(): (String, Long, Long) -> Unit {
+        var lastUpdate = 0L
+        return { label, completed, total ->
+            val now = SystemClock.uptimeMillis()
+            if (completed <= 0L || (total > 0L && completed >= total) || now - lastUpdate >= 200L) {
+                lastUpdate = now
+                postPreparation(label, completed, total)
+            }
+        }
+    }
+
+    private fun preparationErrorMessage(error: Throwable): String {
+        val messages = mutableListOf<String>()
+        var current: Throwable? = error
+        repeat(5) {
+            val message = current?.message?.trim().orEmpty()
+            if (message.isNotEmpty() && message !in messages) messages += message
+            current = current?.cause
+        }
+        return messages.joinToString(" → ").ifBlank { error.javaClass.simpleName }
+    }
+
+    private fun prepareRom(
+        uri: Uri,
+        name: String,
+        systemId: String,
+        romDirectory: File,
+        report: (String, Long, Long) -> Unit,
+    ): File {
         val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val key = uri.toString().hashCode().toUInt().toString(16)
         val source = File(romDirectory, "${key}_$safeName")
         val maxBytes = maxRomBytes(systemId)
+        report("Checking file and storage", 0L, -1L)
         val sourceSize = querySize(uri)
         require(sourceSize <= 0L || sourceSize <= maxBytes) {
             "The selected game is too large for Android preparation (${formatBytes(maxBytes)} limit)."
@@ -296,11 +395,16 @@ class MainActivity : AppCompatActivity() {
         }
         contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Android could not open this game." }
-            writeLimited(input, source, maxBytes)
+            val copyLabel = if (name.substringAfterLast('.', "").lowercase() in setOf("zip", "7z")) {
+                "Copying archive"
+            } else {
+                "Copying game file"
+            }
+            writeLimited(input, source, maxBytes, copyLabel, sourceSize, report)
         }
         return when (name.substringAfterLast('.', "").lowercase()) {
-            "zip" -> extractZip(source, key, systemId, romDirectory)
-            "7z" -> extractSevenZip(source, key, systemId, romDirectory)
+            "zip" -> extractZip(source, key, systemId, romDirectory, report)
+            "7z" -> extractSevenZip(source, key, systemId, romDirectory, report)
             else -> source
         }
     }
@@ -388,7 +492,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun extractZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+    private fun extractZip(
+        source: File,
+        key: String,
+        systemId: String,
+        outputDirectory: File,
+        report: (String, Long, Long) -> Unit,
+    ): File {
         val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
         val maxBytes = maxRomBytes(systemId)
         var selected: File? = null
@@ -399,7 +509,16 @@ class MainActivity : AppCompatActivity() {
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
                     }
-                    writeLimited(archive, output, maxBytes)
+                    val entryName = entry.name.substringAfterLast('/').ifBlank { entry.name }
+                    report("Extracting $entryName", 0L, entry.size.takeIf { it > 0L } ?: -1L)
+                    writeLimited(
+                        archive,
+                        output,
+                        maxBytes,
+                        "Extracting $entryName",
+                        entry.size.takeIf { it > 0L } ?: -1L,
+                        report,
+                    )
                     if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
                         selected = output
                     }
@@ -410,7 +529,13 @@ class MainActivity : AppCompatActivity() {
         throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the ZIP.")
     }
 
-    private fun extractSevenZip(source: File, key: String, systemId: String, outputDirectory: File): File {
+    private fun extractSevenZip(
+        source: File,
+        key: String,
+        systemId: String,
+        outputDirectory: File,
+        report: (String, Long, Long) -> Unit,
+    ): File {
         val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
         val maxBytes = maxRomBytes(systemId)
         var selected: File? = null
@@ -422,6 +547,9 @@ class MainActivity : AppCompatActivity() {
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
                     }
+                    val entryName = entry.name.substringAfterLast('/').ifBlank { entry.name }
+                    val entrySize = entry.size.takeIf { it > 0L } ?: -1L
+                    report("Extracting $entryName", 0L, entrySize)
                     FileOutputStream(output).use { destination ->
                         val buffer = ByteArray(BUFFER_SIZE)
                         var total = 0L
@@ -431,7 +559,9 @@ class MainActivity : AppCompatActivity() {
                             total += read
                             require(total <= maxBytes) { "The selected ROM is too large." }
                             destination.write(buffer, 0, read)
+                            report("Extracting $entryName", total, entrySize)
                         }
+                        report("Extracting $entryName", total, entrySize)
                     }
                     if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
                         selected = output
@@ -443,17 +573,28 @@ class MainActivity : AppCompatActivity() {
         throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the 7z archive.")
     }
 
-    private fun writeLimited(input: java.io.InputStream, output: File, maxBytes: Long = MAX_ROM_BYTES) {
+    private fun writeLimited(
+        input: java.io.InputStream,
+        output: File,
+        maxBytes: Long = MAX_ROM_BYTES,
+        label: String = "Copying game file",
+        expectedBytes: Long = -1L,
+        report: (String, Long, Long) -> Unit = { _, _, _ -> },
+    ): Long {
         FileOutputStream(output).use { destination ->
             val buffer = ByteArray(BUFFER_SIZE)
             var total = 0L
+            report(label, 0L, expectedBytes)
             while (true) {
                 val read = input.read(buffer)
                 if (read <= 0) break
                 total += read
                 require(total <= maxBytes) { "The selected ROM is too large." }
                 destination.write(buffer, 0, read)
+                report(label, total, expectedBytes)
             }
+            report(label, total, expectedBytes)
+            return total
         }
     }
 

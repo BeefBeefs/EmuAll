@@ -401,19 +401,29 @@ class MainActivity : AppCompatActivity() {
                 validatePreparedRom(rom, systemId)
                 recentStore.touch(uri, rom.absolutePath)
                 postPreparation("Launching ${core.displayName}", -1L, -1L)
+                val systemDirectory = systemDirectoryFor(systemId)
+                val intent = Intent(this, EmulationActivity::class.java).apply {
+                    putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
+                    putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
+                    putExtra(EmulationActivity.EXTRA_CORE_LIBRARY, core.libraryName)
+                    putExtra(EmulationActivity.EXTRA_CORE_NAME, core.displayName)
+                    putExtra(EmulationActivity.EXTRA_SYSTEM_ID, systemId)
+                    putExtra(EmulationActivity.EXTRA_SYSTEM_DIRECTORY, systemDirectory)
+                    putExtra(EmulationActivity.EXTRA_AUTO_LOAD, autoLoad)
+                    putExtra(EmulationActivity.EXTRA_AUTO_LOAD_SLOT, autoLoadSlot)
+                }
                 runOnUiThread {
-                    preparationInProgress = false
-                    preparationPanel.visibility = View.GONE
-                    startActivity(Intent(this, EmulationActivity::class.java).apply {
-                        putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)
-                        putExtra(EmulationActivity.EXTRA_SAVE, local.save.absolutePath)
-                        putExtra(EmulationActivity.EXTRA_CORE_LIBRARY, core.libraryName)
-                        putExtra(EmulationActivity.EXTRA_CORE_NAME, core.displayName)
-                        putExtra(EmulationActivity.EXTRA_SYSTEM_ID, systemId)
-                        putExtra(EmulationActivity.EXTRA_SYSTEM_DIRECTORY, systemDirectoryFor(systemId))
-                        putExtra(EmulationActivity.EXTRA_AUTO_LOAD, autoLoad)
-                        putExtra(EmulationActivity.EXTRA_AUTO_LOAD_SLOT, autoLoadSlot)
-                    })
+                    try {
+                        preparationStatus.text = "Opening ${core.displayName}…"
+                        startActivity(intent)
+                        preparationInProgress = false
+                        preparationPanel.visibility = View.GONE
+                    } catch (error: Throwable) {
+                        preparationInProgress = false
+                        val message = preparationErrorMessage(error)
+                        showPreparationFailure(name, message)
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (error: Throwable) {
                 val message = preparationErrorMessage(error)
@@ -549,7 +559,7 @@ class MainActivity : AppCompatActivity() {
         when (extension) {
             "gdi" -> {
                 val lines = rom.readLines()
-                val trackCount = lines.firstOrNull()?.trim()?.toIntOrNull()
+                val trackCount = lines.firstOrNull()?.trim()?.removePrefix("\uFEFF")?.toIntOrNull()
                 require(trackCount != null && trackCount > 0) { "This Dreamcast GDI is missing its track list." }
                 require(lines.size >= trackCount + 1) { "This Dreamcast GDI is missing track entries." }
                 lines.drop(1).take(trackCount).forEach { line ->
@@ -581,14 +591,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requireSidecar(descriptor: File, reference: String, format: String) {
-        val clean = reference.replace('\\', '/')
+        val clean = reference.trim().trim('"', '\'').replace('\\', '/')
             .split('/')
             .filter { it.isNotBlank() && it != "." && it != ".." }
             .joinToString(File.separator)
-        val sidecar = File(descriptor.parentFile, clean)
+        val sidecar = findSidecar(descriptor.parentFile ?: File("."), clean)
         require(sidecar.isFile && sidecar.length() > 0L) {
             "$format is missing track file ${reference.substringAfterLast('/')} — select a ZIP/7z containing the complete disc set."
         }
+    }
+
+    /** Resolves archive sidecars without requiring a case-sensitive filename match. */
+    private fun findSidecar(parent: File, relativePath: String): File {
+        var current = parent
+        relativePath.split(File.separatorChar).filter { it.isNotBlank() }.forEach { part ->
+            val direct = File(current, part)
+            current = when {
+                direct.isFile || direct.isDirectory -> direct
+                else -> current.listFiles()?.firstOrNull { it.name.equals(part, ignoreCase = true) } ?: File(current, part)
+            }
+        }
+        return current
     }
 
     private fun validateGameCubeDisc(rom: File) {
@@ -743,7 +766,7 @@ class MainActivity : AppCompatActivity() {
         // GDI/CUE descriptors often reference raw or WAV tracks that are not
         // themselves launchable entries. Keep them beside the descriptor so
         // Flycast can resolve the relative paths after extraction.
-        return name.substringAfterLast('.', "").lowercase() in setOf("raw", "track", "wav", "sub", "img", "toc")
+        return name.substringAfterLast('.', "").lowercase() in setOf("raw", "track", "wav", "sub", "img", "toc", "dat", "idx", "iso")
     }
 
     /** Keeps disc-image sidecar files next to their descriptor (e.g. GDI + tracks). */
@@ -751,7 +774,10 @@ class MainActivity : AppCompatActivity() {
         .replace('\\', '/')
         .split('/')
         .filter { it.isNotBlank() && it != "." && it != ".." }
-        .joinToString("/") { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
+        // Preserve the archive's original filename.  GDI/CUE descriptors
+        // refer to track names verbatim, so replacing punctuation here makes
+        // a track appear to be missing even though it was in the archive.
+        .joinToString("/") { it.replace('\u0000', '_') }
         .ifBlank { "entry" }
 
     private fun archiveEntryPriority(name: String): Int = when (name.substringAfterLast('.', "").lowercase()) {

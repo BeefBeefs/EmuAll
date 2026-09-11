@@ -32,8 +32,16 @@ class EmulationActivity : AppCompatActivity() {
         surface = findViewById(R.id.gameSurface)
         surfaceHost = findViewById(R.id.surfaceHost)
         applySessionLayout(resources.configuration.orientation)
-        val rom = intent.getStringExtra(EXTRA_ROM) ?: return finish()
-        val save = intent.getStringExtra(EXTRA_SAVE) ?: return finish()
+        val rom = intent.getStringExtra(EXTRA_ROM)
+        if (rom.isNullOrBlank()) {
+            showLaunchError("Could not start emulation: no prepared game file was provided.")
+            return
+        }
+        val save = intent.getStringExtra(EXTRA_SAVE)
+        if (save.isNullOrBlank()) {
+            showLaunchError("Could not start emulation: no save location was provided.")
+            return
+        }
         val coreLibrary = intent.getStringExtra(EXTRA_CORE_LIBRARY) ?: "libmgba_libretro.so"
         val coreName = intent.getStringExtra(EXTRA_CORE_NAME) ?: "libretro core"
         val systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
@@ -46,14 +54,13 @@ class EmulationActivity : AppCompatActivity() {
         // symbols after switching systems in the same app process.
         val corePath = File(applicationInfo.nativeLibraryDir, coreLibrary)
         if (!corePath.isFile) {
-            findViewById<TextView>(R.id.sessionStatus).text = "Could not load $coreName: ${corePath.name} is not packaged for this device"
-            finish()
+            showLaunchError("Could not load $coreName: ${corePath.name} is not packaged for this device")
             return
         }
         bindControls()
         val systemDirectory = intent.getStringExtra(EXTRA_SYSTEM_DIRECTORY) ?: filesDir.absolutePath
         surface.start(corePath.absolutePath, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
-            findViewById<TextView>(R.id.sessionStatus).text = status
+            runOnUiThread { findViewById<TextView>(R.id.sessionStatus).text = status }
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
         findViewById<Button>(R.id.menuButton).setOnClickListener {
@@ -71,6 +78,18 @@ class EmulationActivity : AppCompatActivity() {
             setOnClickListener { showStateMenu(this, false) }
         }
         findViewById<Button>(R.id.fastButton).setOnClickListener { button -> (button as Button).text = if (surface.toggleFastForward()) "FF 3×" else "FF" }
+    }
+
+    private fun showLaunchError(message: String) {
+        findViewById<TextView>(R.id.sessionStatus).text = message
+        findViewById<FrameLayout>(R.id.gameControls).alpha = 0.45f
+        findViewById<Button>(R.id.menuButton).apply {
+            text = "Back"
+            setOnClickListener {
+                explicitExit = true
+                finish()
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

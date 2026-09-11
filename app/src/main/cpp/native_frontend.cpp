@@ -179,13 +179,13 @@ bool environment(unsigned command, void* data) {
             if (!g.hardwareRendering || !data) return false;
             auto* callback = static_cast<retro_hw_render_callback*>(data);
             // The Android surface currently exposes GLES 3.0. Never claim to
-            // provide a Vulkan or desktop-OpenGL context and then silently
-            // hand the core a different API: Dolphin/Flycast branch on this
-            // value during renderer setup, and that mismatch can terminate
-            // the process before a frame is produced. Cores that ask for
-            // GLES2 are accepted on the GLES3 context because GLES3 is
-            // backwards-compatible with their shader/API subset.
-            if (callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
+            // provide Vulkan or a desktop-only API such as D3D; those cores
+            // need a real native context negotiation interface. A few Android
+            // builds (notably PPSSPP) label their GLES path as OPENGL, so keep
+            // those legacy requests as compatibility aliases for GLES3.
+            if (callback->context_type != RETRO_HW_CONTEXT_OPENGL &&
+                callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
+                callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION) return false;
             __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",

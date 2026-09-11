@@ -94,7 +94,11 @@ void gles_draw_buffer(GLenum mode) {
     // GL_BACK_LEFT/GL_BACK_RIGHT are desktop-only names. They are both the
     // single Android window backbuffer in this frontend, so all default-FBO
     // selections map to GL_BACK.
-    glDrawBuffers(1, &target);
+    // Do not link this symbol directly: some Android GLES drivers expose it
+    // only through eglGetProcAddress even though GLES 3 headers declare it.
+    using gl_draw_buffers_proc = void (*)(GLsizei, const GLenum*);
+    auto drawBuffers = reinterpret_cast<gl_draw_buffers_proc>(eglGetProcAddress("glDrawBuffers"));
+    if (drawBuffers) drawBuffers(1, &target);
 }
 
 retro_proc_address_t hardware_proc_address(const char* symbol) {

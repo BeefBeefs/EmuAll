@@ -41,6 +41,15 @@ android {
         }
     }
 
+    // The frontend opens each libretro core with dlopen(RTLD_LOCAL). Keep the
+    // packaged core DSOs as real files in nativeLibraryDir so that absolute
+    // paths work on Android devices instead of only existing inside the APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     sourceSets["main"].assets.srcDir(dreamcastAssetsDir)
 
     buildTypes {

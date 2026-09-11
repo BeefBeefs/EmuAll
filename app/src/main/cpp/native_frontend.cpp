@@ -131,7 +131,7 @@ void perf_stop(retro_perf_counter* counter) {
 void perf_log() {}
 
 bool rumble_state(unsigned, retro_rumble_effect, uint16_t) { return false; }
-void sensor_set_state(unsigned, retro_sensor_action, unsigned) {}
+bool sensor_set_state(unsigned, retro_sensor_action, unsigned) { return false; }
 float sensor_get_input(unsigned, unsigned) { return 0.0f; }
 
 bool environment(unsigned command, void* data) {

@@ -7,6 +7,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.MotionEvent
@@ -23,6 +27,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
@@ -39,6 +44,11 @@ class EmulationActivity : AppCompatActivity() {
     private val controlPlaceholders = mutableMapOf<Int, View>()
     private var individualControlsReady = false
     private var lastSessionStatus = "Starting core…"
+    private var originalMainThreadPriority: Int? = null
+    private val uiWatchdogRunning = AtomicBoolean(false)
+    private val uiHeartbeatPending = AtomicBoolean(false)
+    @Volatile private var lastUiHeartbeatMillis = 0L
+    private var uiWatchdogThread: Thread? = null
     // Rotation can destroy/recreate a window while Android reports the old
     // Activity as finishing. Only an explicit user exit is allowed to stop
     // the native session; configuration changes must leave it alive.
@@ -54,6 +64,7 @@ class EmulationActivity : AppCompatActivity() {
         surface = findViewById(R.id.gameSurface)
         surfaceHost = findViewById(R.id.surfaceHost)
         systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
+        if (systemId == "ps2") protectPs2UiThread()
         configureControlProfile()
         layoutOrientation = resources.configuration.orientation
         applySessionLayout(layoutOrientation)
@@ -121,6 +132,59 @@ class EmulationActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    /**
+     * Play! can saturate the CPU and GPU while its first PS2 frames are being
+     * compiled. Keep Android input dispatch above that work and record the
+     * main-thread stack if it still misses the ANR deadline on a device.
+     */
+    private fun protectPs2UiThread() {
+        val mainTid = Process.myTid()
+        val currentPriority = Process.getThreadPriority(mainTid)
+        originalMainThreadPriority = currentPriority
+        if (currentPriority > Process.THREAD_PRIORITY_DISPLAY) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+        }
+        val mainHandler = Handler(Looper.getMainLooper())
+        lastUiHeartbeatMillis = SystemClock.uptimeMillis()
+        uiWatchdogRunning.set(true)
+        uiWatchdogThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT)
+            var stallReported = false
+            while (uiWatchdogRunning.get()) {
+                if (uiHeartbeatPending.compareAndSet(false, true)) {
+                    mainHandler.post {
+                        lastUiHeartbeatMillis = SystemClock.uptimeMillis()
+                        uiHeartbeatPending.set(false)
+                    }
+                }
+                try {
+                    Thread.sleep(1000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                val stalledFor = SystemClock.uptimeMillis() - lastUiHeartbeatMillis
+                if (stalledFor >= 3500 && !stallReported) {
+                    val stack = Looper.getMainLooper().thread.stackTrace
+                        .take(24)
+                        .joinToString("\n") { "  at $it" }
+                    NativeCoreBridge.diagnosticMarker(
+                        "UI watchdog: main thread stalled for ${stalledFor}ms\n$stack",
+                    )
+                    stallReported = true
+                } else if (stalledFor < 1500) {
+                    stallReported = false
+                }
+            }
+        }, "EmuAll-UIWatchdog").also { it.start() }
+    }
+
+    private fun stopUiWatchdog() {
+        uiWatchdogRunning.set(false)
+        uiWatchdogThread?.interrupt()
+        uiWatchdogThread = null
+        uiHeartbeatPending.set(false)
     }
 
     private fun showDiagnostics() {
@@ -746,6 +810,10 @@ class EmulationActivity : AppCompatActivity() {
         // finishing even though the user is still in the same session.
         if (editingControls) saveControlPositions(layoutOrientation)
         if (explicitExit) surface.stop()
+        stopUiWatchdog()
+        originalMainThreadPriority?.let { priority ->
+            runCatching { Process.setThreadPriority(priority) }
+        }
         super.onDestroy()
     }
     companion object {

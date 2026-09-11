@@ -18,7 +18,8 @@ object NativeCoreBridge {
     }
 
     external fun frontendVersion(): String
-    external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String): Boolean
+    external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, hardwareRendering: Boolean): Boolean
+    external fun hardwareContextReset()
     external fun runFrame()
     external fun copyFrame(destination: java.nio.ByteBuffer): Int
     external fun frameWidth(): Int

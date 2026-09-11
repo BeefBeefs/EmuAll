@@ -166,7 +166,10 @@ class MainActivity : AppCompatActivity() {
             }
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(actionButton("Play", true) {
-                if (CoreRegistry.playableForSystem(this, game.systemId) != null) launchGame(game.uri, game.name, game.systemId)
+                if (CoreRegistry.playableForSystem(this, game.systemId) != null) {
+                    recentStore.touch(game.uri)
+                    launchGame(game.uri, game.name, game.systemId)
+                }
                 else Toast.makeText(this, "${selectedSystem.coreName} is not integrated yet.", Toast.LENGTH_SHORT).show()
             })
             row.addView(actionButton("Remove", false) {
@@ -209,7 +212,7 @@ class MainActivity : AppCompatActivity() {
                     contentDescription = "${game.name} Slot $slot screenshot"
                     if (thumbnailFile(state).isFile) setImageBitmap(BitmapFactory.decodeFile(thumbnailFile(state).absolutePath))
                 }
-                slotCard.addView(thumbnail, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)))
+                slotCard.addView(thumbnail, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(84)))
                 slotCard.addView(label(if (state.isFile) "Slot $slot" else "Slot $slot · Empty", 10f, if (state.isFile) R.color.text_primary else R.color.text_muted, true).apply {
                     gravity = Gravity.CENTER
                     setPadding(0, dp(4), 0, dp(3))
@@ -220,7 +223,7 @@ class MainActivity : AppCompatActivity() {
                         state.delete(); thumbnailFile(state).delete(); renderSystemPage()
                     })
                 }
-                slots.addView(slotCard, LinearLayout.LayoutParams(0, dp(115), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
+                slots.addView(slotCard, LinearLayout.LayoutParams(0, dp(218), 1f).apply { marginStart = dp(3); marginEnd = dp(3) })
             }
             stateSection.addView(slots, cardParams())
         }
@@ -253,9 +256,12 @@ class MainActivity : AppCompatActivity() {
         Thread {
             runCatching {
                 val romDirectory = File(filesDir, "roms/$systemId").apply { mkdirs() }
+                val recent = recentStore.load().firstOrNull { it.uri == uri }
                 val local = localFiles(RecentGame(systemId, name, uri, 0))
                 local.save.parentFile?.mkdirs()
-                val rom = prepareRom(uri, name, systemId, romDirectory)
+                val cached = recent?.cachedRomPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
+                val rom = cached ?: prepareRom(uri, name, systemId, romDirectory)
+                recentStore.touch(uri, rom.absolutePath)
                 runOnUiThread {
                     startActivity(Intent(this, EmulationActivity::class.java).apply {
                         putExtra(EmulationActivity.EXTRA_ROM, rom.absolutePath)

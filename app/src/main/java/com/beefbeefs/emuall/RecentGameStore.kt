@@ -5,7 +5,13 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class RecentGame(val systemId: String, val name: String, val uri: Uri, val playedAt: Long)
+data class RecentGame(
+    val systemId: String,
+    val name: String,
+    val uri: Uri,
+    val playedAt: Long,
+    val cachedRomPath: String? = null,
+)
 
 class RecentGameStore(context: Context) {
     private val prefs = context.getSharedPreferences("recent_games", Context.MODE_PRIVATE)
@@ -31,6 +37,7 @@ class RecentGameStore(context: Context) {
                         item.getString("name"),
                         Uri.parse(item.getString("uri")),
                         item.getLong("playedAt"),
+                        item.optString("cachedRomPath").takeIf { it.isNotBlank() },
                     )
                 )
             }
@@ -38,6 +45,16 @@ class RecentGameStore(context: Context) {
     }.getOrDefault(emptyList())
 
     fun remove(uri: Uri) = save(load().filterNot { it.uri == uri })
+
+    /** Refreshes recency and remembers the internal ROM copy used for future launches. */
+    fun touch(uri: Uri, cachedRomPath: String? = null) {
+        val existing = load().firstOrNull { it.uri == uri } ?: return
+        val updated = existing.copy(
+            playedAt = System.currentTimeMillis(),
+            cachedRomPath = cachedRomPath ?: existing.cachedRomPath,
+        )
+        save(listOf(updated) + load().filterNot { it.uri == uri })
+    }
 
     private fun save(games: List<RecentGame>) {
         val data = JSONArray()
@@ -47,9 +64,12 @@ class RecentGameStore(context: Context) {
                 put("name", game.name)
                 put("uri", game.uri.toString())
                 put("playedAt", game.playedAt)
+                game.cachedRomPath?.let { put("cachedRomPath", it) }
             })
         }
-        prefs.edit().putString(KEY, data.toString()).apply()
+        // Commit before launching the emulator so the recents list survives a
+        // process death immediately after a game is selected.
+        prefs.edit().putString(KEY, data.toString()).commit()
     }
 
     companion object {

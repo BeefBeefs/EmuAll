@@ -3,6 +3,7 @@ package com.beefbeefs.emuall
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.app.ActivityManager
 
 /** Rendering paths supported by the native frontend. */
 enum class VideoBackend(val label: String) {
@@ -24,6 +25,16 @@ object GraphicsBackendSelector {
             packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
     }
 
+    fun gles3Available(context: Context): Boolean =
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager)
+            .deviceConfigurationInfo.reqGlEsVersion >= 0x30000
+
+    fun canRender(context: Context, core: CoreDefinition): Boolean {
+        if (!core.requiresHardwareRendering) return true
+        return (core.supportsVulkanRendering && vulkanAvailable(context)) ||
+            (core.supportsOpenGlHardware && gles3Available(context))
+    }
+
     fun select(context: Context, core: CoreDefinition): VideoBackend {
         return if (core.preferredVideoBackend == VideoBackend.VULKAN &&
             core.supportsVulkanRendering && vulkanAvailable(context)
@@ -34,6 +45,7 @@ object GraphicsBackendSelector {
         val selected = select(context, core)
         return when {
             selected == VideoBackend.VULKAN -> "Vulkan"
+            core.requiresHardwareRendering && core.supportsOpenGlHardware -> "OpenGL ES hardware fallback"
             core.preferredVideoBackend == VideoBackend.VULKAN -> "OpenGL ES fallback"
             else -> "OpenGL ES"
         }

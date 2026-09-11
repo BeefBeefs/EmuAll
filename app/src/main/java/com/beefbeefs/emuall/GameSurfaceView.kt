@@ -16,6 +16,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.max
@@ -29,9 +31,27 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private val pendingSlot = AtomicInteger(1)
     private var emulationThread: Thread? = null
     private var inputMask = 0
+    private var hardwareRendering = false
+    private val hardwareStarted = AtomicBoolean(false)
+    private val hardwareStartAttempted = AtomicBoolean(false)
+    private var hardwareSession: HardwareSession? = null
+    private var hardwareAudioRunning: AtomicBoolean? = null
+    private var hardwareAudioThread: Thread? = null
+    private var statusCallback: ((String) -> Unit)? = null
+
+    private data class HardwareSession(
+        val corePath: String,
+        val romPath: String,
+        val savePath: String,
+        val systemDirectory: String,
+        val coreName: String,
+        val videoBackend: VideoBackend,
+    )
 
     init {
-        setEGLContextClientVersion(2)
+        // The software texture path works on GLES3 as well, while the first
+        // hardware core (Mupen64Plus-Next GLES3) requires an ES 3 context.
+        setEGLContextClientVersion(3)
         preserveEGLContextOnPause = true
         setRenderer(gameRenderer)
         renderMode = RENDERMODE_WHEN_DIRTY
@@ -44,12 +64,23 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         systemDirectory: String,
         coreName: String,
         videoBackend: VideoBackend = VideoBackend.OPENGL_ES,
+        hardwareRendering: Boolean = false,
         onStatus: (String) -> Unit,
     ) {
         if (!running.compareAndSet(false, true)) return
+        this.hardwareRendering = hardwareRendering
+        this.statusCallback = onStatus
+        if (hardwareRendering) {
+            hardwareSession = HardwareSession(corePath, romPath, savePath, systemDirectory, coreName, videoBackend)
+            hardwareStartAttempted.set(false)
+            hardwareStarted.set(false)
+            renderMode = RENDERMODE_CONTINUOUSLY
+            requestRender()
+            return
+        }
         emulationThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
-            if (!NativeCoreBridge.start(corePath, romPath, savePath, systemDirectory)) {
+            if (!NativeCoreBridge.start(corePath, romPath, savePath, systemDirectory, false)) {
                 running.set(false)
                 post { onStatus(NativeCoreBridge.lastError()) }
                 return@Thread
@@ -158,6 +189,82 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         }, "EmuAll-$coreName").also { it.start() }
     }
 
+    private fun startHardwareSessionIfNeeded() {
+        val session = hardwareSession ?: return
+        if (!hardwareStartAttempted.compareAndSet(false, true)) return
+        if (!NativeCoreBridge.start(session.corePath, session.romPath, session.savePath, session.systemDirectory, true)) {
+            running.set(false)
+            statusCallback?.invoke(NativeCoreBridge.lastError())
+            return
+        }
+        hardwareStarted.set(true)
+        startHardwareAudio(NativeCoreBridge.sampleRate().coerceAtLeast(8000))
+        statusCallback?.invoke("${session.coreName} · ${session.videoBackend.label} hardware context · Starting")
+    }
+
+    private fun startHardwareAudio(sampleRate: Int) {
+        val audio = createAudioTrack(sampleRate) ?: return
+        val audioRunning = AtomicBoolean(true)
+        hardwareAudioRunning = audioRunning
+        hardwareAudioThread = Thread({
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            val samples = ShortArray(4096)
+            audio.play()
+            try {
+                while (audioRunning.get() && running.get()) {
+                    val count = NativeCoreBridge.drainAudio(samples)
+                    if (count <= 0) Thread.sleep(2)
+                    else if (!paused.get() && speed.get() == 1) {
+                        var offset = 0
+                        while (offset < count && audioRunning.get() && running.get()) {
+                            val written = audio.write(samples, offset, count - offset, AudioTrack.WRITE_BLOCKING)
+                            if (written <= 0) break
+                            offset += written
+                        }
+                    }
+                }
+            } finally {
+                audio.pause(); audio.flush(); audio.release()
+            }
+        }, "EmuAll-HardwareAudio").also { it.start() }
+    }
+
+    /** Runs one hardware frame on the GLSurfaceView thread, where the GL context is current. */
+    private fun renderHardwareFrame() {
+        startHardwareSessionIfNeeded()
+        if (!hardwareStarted.get()) return
+        val session = hardwareSession ?: return
+        val action = pendingAction.getAndSet(ACTION_NONE)
+        var saveThumbnail: String? = null
+        if (action != ACTION_NONE) {
+            val slot = pendingSlot.get().coerceIn(1, 3)
+            val statePath = statePath(session.savePath, slot)
+            val message = when (action) {
+                ACTION_RESET -> { NativeCoreBridge.reset(); "Game reset" }
+                ACTION_QUICK_SAVE -> if (NativeCoreBridge.quickSave(statePath)) {
+                    saveThumbnail = "$statePath.png"
+                    "Saved Slot $slot"
+                } else NativeCoreBridge.lastError()
+                ACTION_QUICK_LOAD -> if (NativeCoreBridge.quickLoad(statePath)) "Loaded Slot $slot" else NativeCoreBridge.lastError()
+                else -> ""
+            }
+            statusCallback?.invoke(message)
+        }
+        GLES20.glViewport(0, 0, getWidth(), getHeight())
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        NativeCoreBridge.runFrame()
+        saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
+    }
+
+    private fun stopHardwareSession() {
+        hardwareAudioRunning?.set(false)
+        hardwareAudioThread?.join(1000)
+        hardwareAudioThread = null
+        hardwareAudioRunning = null
+        if (hardwareStarted.compareAndSet(true, false)) NativeCoreBridge.stop()
+        hardwareSession = null
+    }
+
     private fun createAudioTrack(sampleRate: Int): AudioTrack? = try {
         val minimum = AudioTrack.getMinBufferSize(
             sampleRate,
@@ -181,11 +288,13 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private fun captureStateThumbnail(path: String): Boolean = runCatching {
         val width = NativeCoreBridge.frameWidth()
         val height = NativeCoreBridge.frameHeight()
-        if (width <= 0 || height <= 0 || NativeCoreBridge.pixelFormat() != 0) return@runCatching false
-        val pixels = ByteBuffer.allocateDirect(width * height * 2).order(ByteOrder.nativeOrder())
+        val pixelFormat = NativeCoreBridge.pixelFormat()
+        if (width <= 0 || height <= 0 || pixelFormat !in setOf(1, 2)) return@runCatching false
+        val bytesPerPixel = if (pixelFormat == 1) 4 else 2
+        val pixels = ByteBuffer.allocateDirect(width * height * bytesPerPixel).order(ByteOrder.nativeOrder())
         if (NativeCoreBridge.copyFrame(pixels) <= 0) return@runCatching false
         pixels.position(0)
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+        val bitmap = Bitmap.createBitmap(width, height, if (pixelFormat == 1) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565)
         bitmap.copyPixelsFromBuffer(pixels)
         FileOutputStream(File(path)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
@@ -202,7 +311,26 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         inputMask = if (down) inputMask or (1 shl id) else inputMask and (1 shl id).inv()
         NativeCoreBridge.setInputMask(inputMask)
     }
-    fun stop() { running.set(false); emulationThread?.join(2000); emulationThread = null }
+    fun stop() {
+        running.set(false)
+        if (hardwareRendering) {
+            val stopped = CountDownLatch(1)
+            queueEvent {
+                stopHardwareSession()
+                stopped.countDown()
+            }
+            requestRender()
+            if (!stopped.await(2, TimeUnit.SECONDS)) {
+                // Surface teardown can race Activity destruction. Ensure the
+                // native session is not left running even if the GL queue stops.
+                if (hardwareStarted.compareAndSet(true, false)) NativeCoreBridge.stop()
+            }
+            hardwareRendering = false
+        } else {
+            emulationThread?.join(2000)
+            emulationThread = null
+        }
+    }
 
     private fun statePath(savePath: String, slot: Int) = if (slot == 1) "$savePath.quick.state" else "$savePath.state.$slot"
 
@@ -222,6 +350,9 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         private var textureCoordinateLocation = -1
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+            textureWidth = 0
+            textureHeight = 0
+            textureFormat = 0
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             val vertex = shader(GLES20.GL_VERTEX_SHADER, "attribute vec2 p;attribute vec2 t;varying vec2 uv;void main(){gl_Position=vec4(p,0.,1.);uv=t;}")
             val fragment = shader(GLES20.GL_FRAGMENT_SHADER, "precision mediump float;uniform sampler2D s;varying vec2 uv;void main(){gl_FragColor=texture2D(s,uv);}")
@@ -234,9 +365,18 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            if (hardwareRendering && hardwareStarted.get()) NativeCoreBridge.hardwareContextReset()
+            post { requestRender() }
         }
-        override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) { surfaceWidth = width; surfaceHeight = height }
+        override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+            surfaceWidth = width; surfaceHeight = height
+            requestRender()
+        }
         override fun onDrawFrame(gl: GL10?) {
+            if (hardwareRendering) {
+                renderHardwareFrame()
+                return
+            }
             GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             val width = NativeCoreBridge.frameWidth(); val height = NativeCoreBridge.frameHeight()
             if (width <= 0 || height <= 0) return
@@ -259,6 +399,18 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             vertices.position(2); GLES20.glVertexAttribPointer(textureCoordinateLocation, 2, GLES20.GL_FLOAT, false, 16, vertices); GLES20.glEnableVertexAttribArray(textureCoordinateLocation)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
+        fun captureHardwareThumbnail(path: String): Boolean = runCatching {
+            if (surfaceWidth <= 0 || surfaceHeight <= 0) return@runCatching false
+            val pixels = ByteBuffer.allocateDirect(surfaceWidth * surfaceHeight * 4).order(ByteOrder.nativeOrder())
+            GLES20.glReadPixels(0, 0, surfaceWidth, surfaceHeight, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+            pixels.position(0)
+            val bitmap = Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(pixels)
+            val flipped = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, android.graphics.Matrix().apply { preScale(1f, -1f) }, true)
+            FileOutputStream(File(path)).use { flipped.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle(); flipped.recycle()
+            true
+        }.getOrDefault(false)
         private fun shader(type: Int, code: String) = GLES20.glCreateShader(type).also { GLES20.glShaderSource(it, code); GLES20.glCompileShader(it) }
     }
 

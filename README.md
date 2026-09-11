@@ -29,6 +29,8 @@ Build 7 makes the launcher capability-driven. A core registry now owns the mappi
 
 Build 8 bundles ARM64 libretro cores for NES/Famicom (FCEUmm), SNES (Snes9x), Genesis/Mega Drive (Genesis Plus GX), and PlayStation 1 (PCSX-ReARMed). PSP, N64, Dreamcast, GameCube/Wii, and PS2 cores are also packaged and registered, but their hardware-rendering sessions stay gated until the Android Vulkan/OpenGL hardware context is validated. The renderer capability layer now makes Vulkan the preferred path for hardware cores and keeps OpenGL ES as the safe fallback for software-video cores.
 
+Build 9 hardens the launcher and session lifecycle: recent games retain an internal ROM copy so they can be reopened after a process restart, save-state thumbnails support both libretro RGB565 and XRGB8888 frames, state cards have room for their labels and actions, and orientation changes explicitly recreate the GL surface without losing the running session. The first GLES3 hardware-rendering frontend path is now wired for the N64 core; Vulkan remains preferred for cores that expose a validated Vulkan interface.
+
 The virtual controls now hold their pressed visual state while a touch is down. In landscape, the directional pad sits left of the game, the game remains centered, and the action buttons sit on the right. Save and Load are explicit slot menus covering Slots 1–3.
 
 The session toolbar saves and loads Slot 1 with a tap; long-press either button to choose Slots 1–3.

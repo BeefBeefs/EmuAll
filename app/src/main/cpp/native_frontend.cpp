@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <dlfcn.h>
+#include <EGL/egl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -59,6 +60,9 @@ struct Session {
     std::string saveDirectory;
     std::string lastError;
     std::unordered_map<std::string, std::string> variables;
+    bool hardwareRendering{};
+    bool hardwareContextConfigured{};
+    retro_hw_render_callback hardwareCallback{};
     bool initialized{};
     bool gameLoaded{};
 } g;
@@ -72,8 +76,34 @@ void core_log(enum retro_log_level level, const char* format, ...) {
     va_end(args);
 }
 
+void hardware_context_reset() {}
+void hardware_context_destroy() {}
+uintptr_t hardware_framebuffer() { return 0; }
+retro_proc_address_t hardware_proc_address(const char* symbol) {
+    return reinterpret_cast<retro_proc_address_t>(eglGetProcAddress(symbol));
+}
+
 bool environment(unsigned command, void* data) {
     switch (command) {
+        case RETRO_ENVIRONMENT_SET_HW_RENDER: {
+            if (!g.hardwareRendering || !data) return false;
+            auto* callback = static_cast<retro_hw_render_callback*>(data);
+            // The first hardware path is deliberately GLES3. Vulkan cores can
+            // be added later through the separate libretro Vulkan interface.
+            if (callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
+                callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION) return false;
+            callback->context_type = RETRO_HW_CONTEXT_OPENGLES3;
+            callback->version_major = 3;
+            callback->version_minor = 0;
+            callback->context_reset = hardware_context_reset;
+            callback->context_destroy = hardware_context_destroy;
+            callback->get_current_framebuffer = hardware_framebuffer;
+            callback->get_proc_address = hardware_proc_address;
+            callback->cache_context = true;
+            g.hardwareCallback = *callback;
+            g.hardwareContextConfigured = true;
+            return true;
+        }
         case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
             auto format = *static_cast<const retro_pixel_format*>(data);
             if (format != RETRO_PIXEL_FORMAT_RGB565 && format != RETRO_PIXEL_FORMAT_XRGB8888) return false;
@@ -244,10 +274,13 @@ bool quick_load(const std::string& path) {
 }
 
 void stop_session() {
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy) g.hardwareCallback.context_destroy();
     if (g.gameLoaded) { save_battery(); g.api.unloadGame(); g.gameLoaded = false; }
     if (g.initialized) { g.api.deinit(); g.initialized = false; }
     if (g.api.handle) dlclose(g.api.handle);
     g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear();
+    g.width = 0; g.height = 0; g.hardwareRendering = false;
+    g.hardwareContextConfigured = false; g.hardwareCallback = {};
 }
 
 std::string from_java(JNIEnv* env, jstring value) {
@@ -260,12 +293,14 @@ std::string from_java(JNIEnv* env, jstring value) {
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_frontendVersion(JNIEnv* env, jobject) {
-    return env->NewStringUTF("Libretro v1 · Vulkan preferred");
+    return env->NewStringUTF("Libretro v1 · Vulkan preferred · GLES3 hardware path");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_start(
-        JNIEnv* env, jobject, jstring corePath, jstring romPath, jstring savePath, jstring systemDirectory) {
+        JNIEnv* env, jobject, jstring corePath, jstring romPath, jstring savePath, jstring systemDirectory,
+        jboolean hardwareRendering) {
     stop_session(); g.lastError.clear();
+    g.hardwareRendering = hardwareRendering == JNI_TRUE;
     g.savePath = from_java(env, savePath); g.systemDirectory = from_java(env, systemDirectory);
     size_t slash = g.savePath.find_last_of('/');
     g.saveDirectory = slash == std::string::npos ? g.systemDirectory : g.savePath.substr(0, slash);
@@ -289,6 +324,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         if (size && memory) std::memcpy(memory, save.data(), std::min(size, save.size()));
     }
     return true;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_hardwareContextReset(JNIEnv*, jobject) {
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) { if (g.gameLoaded) g.api.run(); }

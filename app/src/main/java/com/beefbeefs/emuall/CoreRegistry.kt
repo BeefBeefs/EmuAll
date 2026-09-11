@@ -8,6 +8,7 @@ data class CoreDefinition(
     val supportedSystems: Set<String>,
     val preferredVideoBackend: VideoBackend = VideoBackend.OPENGL_ES,
     val supportsVulkanRendering: Boolean = false,
+    val supportsOpenGlHardware: Boolean = false,
     val requiresHardwareRendering: Boolean = false,
 )
 
@@ -37,6 +38,7 @@ object CoreRegistry {
         CoreDefinition(
             "mupen64plus_next_gles3", "Mupen64Plus-Next", "libmupen64plus_next_gles3_libretro_android.so", setOf("n64"),
             preferredVideoBackend = VideoBackend.VULKAN,
+            supportsOpenGlHardware = true,
             requiresHardwareRendering = true,
         ),
         CoreDefinition(
@@ -68,8 +70,6 @@ object CoreRegistry {
     fun playableForSystem(context: android.content.Context, systemId: String): CoreDefinition? {
         val core = forSystem(systemId) ?: return null
         if (!core.requiresHardwareRendering) return core
-        return core.takeIf {
-            core.supportsVulkanRendering && GraphicsBackendSelector.vulkanAvailable(context)
-        }
+        return core.takeIf { GraphicsBackendSelector.canRender(context, core) }
     }
 }

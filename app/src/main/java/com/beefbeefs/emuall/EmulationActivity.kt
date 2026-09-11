@@ -38,7 +38,7 @@ class EmulationActivity : AppCompatActivity() {
             return
         }
         bindControls()
-        surface.start(coreLibrary, rom, save, filesDir.absolutePath, coreName, videoBackend) { status ->
+        surface.start(coreLibrary, rom, save, filesDir.absolutePath, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))
@@ -57,8 +57,14 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
+        // Moving a GLSurfaceView between parents during a live orientation
+        // change can invalidate its EGL surface. Pause rendering around the
+        // reparent, then explicitly request a fresh frame after the new layout.
+        surface.onPause()
         super.onConfigurationChanged(newConfig)
         applySessionLayout(newConfig.orientation)
+        surface.onResume()
+        surface.requestRender()
     }
 
     private fun applySessionLayout(orientation: Int) {

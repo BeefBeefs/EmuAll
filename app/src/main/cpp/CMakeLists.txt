@@ -32,6 +32,7 @@ target_compile_options(emuall_frontend PRIVATE -O2)
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(gles-lib GLESv2)
+find_library(egl-lib EGL)
 find_library(dl-lib dl)
 
 target_link_libraries(
@@ -39,5 +40,6 @@ target_link_libraries(
     ${log-lib}
     ${android-lib}
     ${gles-lib}
+    ${egl-lib}
     ${dl-lib}
 )

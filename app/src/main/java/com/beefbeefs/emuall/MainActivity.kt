@@ -78,7 +78,8 @@ class MainActivity : AppCompatActivity() {
         preparationStatus = findViewById(R.id.preparationStatus)
         preparationProgress = findViewById(R.id.preparationProgress)
         controllerButton.setOnClickListener { showControllerMappingDialog() }
-        findViewById<TextView>(R.id.buildLabel).text = "NATIVE ENGINE · BUILD ${BuildConfig.VERSION_CODE} · v${BuildConfig.VERSION_NAME}"
+        val packageInfo = packageManager.getPackageInfo(packageName, 0)
+        findViewById<TextView>(R.id.buildLabel).text = "NATIVE ENGINE · BUILD ${packageInfo.longVersionCode} · v${packageInfo.versionName ?: "unknown"}"
         findViewById<TextView>(R.id.nativeStatus).text = runCatching {
             "${NativeCoreBridge.frontendVersion()} · OpenGL ES fallback ready"
         }.getOrElse { "Native frontend could not load: ${it.javaClass.simpleName}" }

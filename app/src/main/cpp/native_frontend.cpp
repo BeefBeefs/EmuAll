@@ -458,12 +458,16 @@ bool environment(unsigned command, void* data) {
                 // Dolphin's default fastmem arena reserves 12 GiB of virtual
                 // address space.  That is a good desktop default but is not
                 // reliable on Android and can terminate the process before a
-                // GameCube frame is produced.  Keep the safer single-threaded
-                // path until a device-specific tuning screen exists.
+                // GameCube frame is produced. Keep fastmem disabled, but run
+                // Dolphin's CPU on its normal worker thread; forcing it onto
+                // the GL thread can make demanding titles appear hung while
+                // the first frames are emulated and shaders compile.
                 if (is_core("dolphin")) {
                     if (key == "dolphin_fastmem_arena" || key == "dolphin_fastmem" ||
-                        key == "dolphin_main_cpu_thread" || key == "dolphin_main_load_game_into_memory")
+                        key == "dolphin_main_load_game_into_memory")
                         value = "disabled";
+                    if (key == "dolphin_main_cpu_thread")
+                        value = "enabled";
                     // The Android frontend owns one GLSurfaceView EGL context
                     // and cannot supply the additional shared contexts used by
                     // Dolphin's asynchronous shader workers. Compile on the
@@ -562,6 +566,14 @@ void video(const void* data, unsigned width, unsigned height, size_t pitch) {
             (data == RETRO_HW_FRAME_BUFFER_VALID ? "hardware" : data ? "software" : "duplicate") +
             " " + std::to_string(width) + "x" + std::to_string(height));
     }
+    // Hardware callbacks carry geometry even though their pixel pointer is
+    // the libretro sentinel. Keep it so the GLES blitter copies only the
+    // rendered portion of a larger frontend-owned target (for example,
+    // Play!'s 640x448 and Dolphin's 640x528 frames).
+    if (width && height) {
+        g.width = width;
+        g.height = height;
+    }
     if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || !width || !height) return;
     size_t bpp = g.pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888 ? 4 : 2;
     size_t rowBytes = width * bpp;
@@ -570,8 +582,6 @@ void video(const void* data, unsigned width, unsigned height, size_t pitch) {
     auto* source = static_cast<const uint8_t*>(data);
     for (unsigned row = 0; row < height; ++row)
         std::memcpy(g.frame.data() + row * rowBytes, source + row * pitch, rowBytes);
-    g.width = width;
-    g.height = height;
 }
 
 void audio_sample(int16_t left, int16_t right) {

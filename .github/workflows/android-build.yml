@@ -32,6 +32,13 @@ jobs:
         run: |
           base64 --decode ci/emuall-debug.keystore.b64 > ci/emuall-debug.keystore
 
+      - name: Bind Flycast to Android shared memory
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes patchelf
+          patchelf --add-needed libandroid.so app/src/main/jniLibs/arm64-v8a/libflycast_libretro_android.so
+          patchelf --print-needed app/src/main/jniLibs/arm64-v8a/libflycast_libretro_android.so | grep -x libandroid.so
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 

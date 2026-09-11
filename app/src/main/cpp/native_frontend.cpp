@@ -13,6 +13,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <fcntl.h>
 #include <cstdlib>
@@ -98,6 +99,11 @@ struct Session {
 } g;
 
 int diagnosticFd = -1;
+// Flycast declares ASharedMemory_create as a weak Android symbol. Since cores
+// are loaded as independent RTLD_LOCAL plug-ins, libandroid must be in the
+// global loader group before Flycast is relocated; otherwise the weak symbol
+// resolves to null and Flycast falls back to the blocked /dev/ashmem device.
+void* androidRuntimeHandle = nullptr;
 
 void open_diagnostic_file(const std::string& path) {
     if (diagnosticFd >= 0) close(diagnosticFd);
@@ -456,6 +462,14 @@ bool environment(unsigned command, void* data) {
                     if (key == "dolphin_fastmem_arena" || key == "dolphin_fastmem" ||
                         key == "dolphin_main_cpu_thread" || key == "dolphin_main_load_game_into_memory")
                         value = "disabled";
+                    // The Android frontend owns one GLSurfaceView EGL context
+                    // and cannot supply the additional shared contexts used by
+                    // Dolphin's asynchronous shader workers. Compile on the
+                    // emulation/GL thread so those workers are never created.
+                    if (key == "dolphin_shader_compilation_mode")
+                        value = "0";
+                    if (key == "dolphin_wait_for_shaders")
+                        value = "disabled";
                 }
                 g.variables[key] = value;
                 ++item;
@@ -526,12 +540,13 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
             return true;
         case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
-            // The frontend and core intentionally use the same current EGL
-            // context on the GLSurfaceView thread. This is stronger than two
-            // contexts sharing an object namespace and satisfies Dolphin's
-            // requirement that its output be visible to the frontend.
-            record_diagnostic("Core requested a shared GL context; using the common frontend/core context");
-            return true;
+            // This command asks whether the frontend can create *additional*
+            // contexts in the same share group. A common current context is
+            // not equivalent. Advertising support made Dolphin start shader
+            // compiler workers whose context creation failed repeatedly just
+            // before the first-frame native crash.
+            record_diagnostic("Core requested shared GL contexts; unavailable, using single-context rendering");
+            return false;
         default:
             __android_log_print(ANDROID_LOG_DEBUG, "EmuAllNative", "Unsupported libretro environment command: %u", command);
             return false;
@@ -593,6 +608,13 @@ template <typename T> bool get_symbol(const char* name, T& target) {
 }
 
 bool load_api(const char* path) {
+    if (!androidRuntimeHandle) {
+        androidRuntimeHandle = dlopen("libandroid.so", RTLD_NOW | RTLD_GLOBAL);
+        void* sharedMemory = androidRuntimeHandle
+            ? dlsym(androidRuntimeHandle, "ASharedMemory_create") : nullptr;
+        record_diagnostic(std::string("Android shared-memory runtime: ") +
+            (sharedMemory ? "available" : "unavailable"));
+    }
     g.api.handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!g.api.handle) {
         const char* error = dlerror();
@@ -616,6 +638,100 @@ bool load_api(const char* path) {
     if (!call_core_bool("retro_api_version", [&] { apiVersion = g.api.apiVersion(); return true; })) return false;
     if (apiVersion != RETRO_API_VERSION) { g.lastError = "Unsupported libretro API"; return false; }
     return true;
+}
+
+bool configure_android_core_runtime(JNIEnv* env) {
+    if (!is_core("play")) return true;
+
+    // Play!'s libretro build starts an Android emulation thread from
+    // retro_init(). In the standalone APK JNI_OnLoad initializes this
+    // singleton, but this plug-in does not export a JNI_OnLoad entry point.
+    // Seed it explicitly before retro_init so AttachCurrentThread never
+    // dereferences a null JavaVM.
+    JavaVM* vm = nullptr;
+    if (!env || env->GetJavaVM(&vm) != JNI_OK || !vm) {
+        g.lastError = "Could not obtain Android JavaVM for the Play! core";
+        record_diagnostic(g.lastError);
+        return false;
+    }
+    using SetJavaVm = void (*)(JavaVM*);
+    auto setJavaVm = reinterpret_cast<SetJavaVm>(
+        dlsym(g.api.handle, "_ZN9Framework7CJavaVM9SetJavaVMEP7_JavaVM"));
+    if (!setJavaVm) {
+        g.lastError = "The Play! core is missing its Android JavaVM initializer";
+        record_diagnostic(g.lastError);
+        return false;
+    }
+    setJavaVm(vm);
+    record_diagnostic("Initialized Play! Android JavaVM bridge");
+    return true;
+}
+
+void configure_dolphin_single_context() {
+    if (!is_core("dolphin")) return;
+
+    // The libretro GLContextLR cannot create a shared context, but upstream's
+    // generic graphics defaults still request one shader compiler thread and
+    // auto-select precompiler workers. Persist zeroes in Dolphin's own GFX
+    // config before UICommon initializes, while preserving every other key.
+    const std::filesystem::path configDirectory =
+        std::filesystem::path(g.saveDirectory) / "User" / "Config";
+    const std::filesystem::path configPath = configDirectory / "GFX.ini";
+    std::error_code error;
+    std::filesystem::create_directories(configDirectory, error);
+    if (error) {
+        record_diagnostic("Could not create Dolphin graphics config directory: " + error.message());
+        return;
+    }
+
+    std::vector<std::string> lines;
+    std::ifstream input(configPath);
+    for (std::string line; std::getline(input, line);) lines.push_back(line);
+
+    bool inSettings = false;
+    bool foundSettings = false;
+    bool compilerWritten = false;
+    bool precompilerWritten = false;
+    size_t insertAt = lines.size();
+    for (size_t index = 0; index < lines.size(); ++index) {
+        std::string compact = lines[index];
+        compact.erase(std::remove_if(compact.begin(), compact.end(),
+            [](unsigned char character) { return character == ' ' || character == '\t' || character == '\r'; }),
+            compact.end());
+        if (!compact.empty() && compact.front() == '[' && compact.back() == ']') {
+            if (inSettings && insertAt == lines.size()) insertAt = index;
+            inSettings = compact == "[Settings]";
+            foundSettings = foundSettings || inSettings;
+            continue;
+        }
+        if (!inSettings) continue;
+        if (compact.rfind("ShaderCompilerThreads=", 0) == 0) {
+            lines[index] = "ShaderCompilerThreads = 0";
+            compilerWritten = true;
+        } else if (compact.rfind("ShaderPrecompilerThreads=", 0) == 0) {
+            lines[index] = "ShaderPrecompilerThreads = 0";
+            precompilerWritten = true;
+        }
+    }
+    if (!foundSettings) {
+        if (!lines.empty() && !lines.back().empty()) lines.emplace_back();
+        lines.emplace_back("[Settings]");
+        insertAt = lines.size();
+    }
+    if (!compilerWritten) lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertAt++),
+        "ShaderCompilerThreads = 0");
+    if (!precompilerWritten) lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertAt),
+        "ShaderPrecompilerThreads = 0");
+
+    const std::filesystem::path temporaryPath = configPath.string() + ".emuall.tmp";
+    std::ofstream output(temporaryPath, std::ios::trunc);
+    for (const auto& line : lines) output << line << '\n';
+    output.close();
+    if (!output || std::rename(temporaryPath.c_str(), configPath.c_str()) != 0) {
+        record_diagnostic("Could not persist Dolphin single-context graphics settings");
+        return;
+    }
+    record_diagnostic("Configured Dolphin shader workers for one GL context");
 }
 
 bool prefers_filesystem_game_path(const std::string& corePath) {
@@ -767,11 +883,16 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         " system=" + g.systemDirectory + " hardware=" + (g.hardwareRendering ? "yes" : "no"));
     record_diagnostic("Frontend framebuffer=" + std::to_string(g.hardwareFramebuffer) +
         " GLES=" + std::to_string(g.glesMajor) + "." + std::to_string(g.glesMinor));
+    configure_dolphin_single_context();
     if (!load_api(core.c_str())) {
         stop_session();
         return false;
     }
     record_diagnostic("Loaded libretro API symbols");
+    if (!configure_android_core_runtime(env)) {
+        stop_session();
+        return false;
+    }
     g.api.setEnvironment(environment); g.api.setVideoRefresh(video);
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);

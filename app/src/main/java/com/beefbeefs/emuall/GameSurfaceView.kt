@@ -44,12 +44,12 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var firstHardwarePresentation = true
     private var hardwareFramePeriodNanos = 16_666_667L
     private var hardwareNextFrameNanos = 0L
-    private var hardwareMinimumYieldMillis = 0L
+    @Volatile private var hardwareRequestDriven = true
     private var statusCallback: ((String) -> Unit)? = null
     @Volatile private var glSurfaceWidth = 0
     @Volatile private var glSurfaceHeight = 0
     private val requestNextHardwareFrame = Runnable {
-        if (running.get() && hardwareRendering && !paused.get()) requestRender()
+        if (running.get() && hardwareRendering && hardwareRequestDriven && !paused.get()) requestRender()
     }
 
     private data class HardwareSession(
@@ -95,13 +95,18 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             hardwareStarted.set(false)
             firstHardwarePresentation = true
             hardwareNextFrameNanos = 0L
-            hardwareMinimumYieldMillis = 0L
+            val isPlay = coreName.contains("Play!", ignoreCase = true) ||
+                corePath.contains("libplay_", ignoreCase = true)
+            hardwareRequestDriven = !isPlay
             // A dirty renderer produces exactly one Android presentation for
             // each requested core frame. Continuous mode also drew between
             // core frames (often at 120 Hz), which could sample Dolphin's live
             // framebuffer while its dual-core renderer was updating it and
             // starved Android input while Play! was busy.
-            renderMode = RENDERMODE_WHEN_DIRTY
+            // Play! regressed under the request-through-main-queue pacing in
+            // build 49. Restore its previously working continuous GL loop;
+            // other hardware cores keep the request-driven presenter.
+            renderMode = if (isPlay) RENDERMODE_CONTINUOUSLY else RENDERMODE_WHEN_DIRTY
             requestRender()
             return
         }
@@ -231,11 +236,6 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             // so the Android main thread can always dispatch touches instead
             // of tripping the five-second application-not-responding limit.
             Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-            // Even when Play!'s first frames take seconds, require the next
-            // frame request to pass through Android's main queue. This gives
-            // pending touches and toolbar actions an input-dispatch turn and
-            // prevents consecutive retro_run calls from monopolizing the app.
-            hardwareMinimumYieldMillis = 8L
         }
         if (!NativeCoreBridge.start(session.corePath, session.romPath, session.savePath, session.systemDirectory, true, context.assets)) {
             running.set(false)
@@ -243,6 +243,10 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             return
         }
         if (isPlay) NativeCoreBridge.diagnosticMarker("Play! workers use background priority to preserve Android input responsiveness")
+        if (session.coreName.contains("dolphin", ignoreCase = true)) {
+            val presentationMode = if (gameRenderer.hasStablePresentationTarget()) "stable frame copy" else "live framebuffer fallback"
+            NativeCoreBridge.diagnosticMarker("Dolphin presentation mode: $presentationMode")
+        }
         val coreFps = NativeCoreBridge.framesPerSecond().takeIf { it.isFinite() && it >= 1.0 } ?: 60.0
         hardwareFramePeriodNanos = (1_000_000_000.0 / coreFps).toLong().coerceAtLeast(1L)
         hardwareNextFrameNanos = System.nanoTime()
@@ -365,6 +369,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             statusCallback?.invoke(NativeCoreBridge.lastError().ifBlank { "The native core stopped unexpectedly" })
             return
         }
+        gameRenderer.snapshotHardwareFrame()
         if (firstHardwarePresentation) NativeCoreBridge.diagnosticMarker("Presenting first hardware frame")
         gameRenderer.presentHardwareFrame(updatedViewport)
         if (firstHardwarePresentation) {
@@ -378,13 +383,14 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         }
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
         val remainingNanos = (hardwareNextFrameNanos - System.nanoTime()).coerceAtLeast(0L)
-        scheduleNextHardwareFrame(maxOf(hardwareMinimumYieldMillis, nanosToDelayMillis(remainingNanos)))
+        scheduleNextHardwareFrame(nanosToDelayMillis(remainingNanos))
     }
 
     private fun nanosToDelayMillis(nanos: Long): Long =
         ((nanos.coerceAtLeast(0L) + 999_999L) / 1_000_000L).coerceAtLeast(1L)
 
     private fun scheduleNextHardwareFrame(delayMillis: Long) {
+        if (!hardwareRequestDriven) return
         removeCallbacks(requestNextHardwareFrame)
         postDelayed(requestNextHardwareFrame, delayMillis.coerceAtLeast(1L))
     }
@@ -426,7 +432,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         hardwareAudioRunning = null
         if (hardwareStarted.compareAndSet(true, false)) NativeCoreBridge.stop()
         hardwareNextFrameNanos = 0L
-        hardwareMinimumYieldMillis = 0L
+        hardwareRequestDriven = true
         hardwareSession = null
     }
 
@@ -541,6 +547,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         private var hardwareFramebuffer = 0
         private var hardwareTexture = 0
         private var hardwareDepthStencil = 0
+        private var presentationFramebuffer = 0
+        private var presentationTexture = 0
         private var hardwareTargetWidth = 640
         private var hardwareTargetHeight = 480
         private var positionLocation = -1
@@ -566,6 +574,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             hardwareFramebuffer = 0
             hardwareTexture = 0
             hardwareDepthStencil = 0
+            presentationFramebuffer = 0
+            presentationTexture = 0
             NativeCoreBridge.setHardwareFramebuffer(0)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             val vertex = shader(GLES20.GL_VERTEX_SHADER, "attribute vec2 p;attribute vec2 t;varying vec2 uv;void main(){gl_Position=vec4(p,0.,1.);uv=t;}")
@@ -655,6 +665,35 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                 NativeCoreBridge.setHardwareFramebuffer(0)
                 return
             }
+            if (coreName.contains("dolphin")) {
+                // Dolphin renders into the frontend FBO asynchronously from
+                // the Android compositor. Keep a second color target holding
+                // only the last completed frame so the presenter can never
+                // sample an EFB/XFB while Dolphin is modifying it.
+                val displayFramebufferIds = IntArray(1)
+                val displayTextureIds = IntArray(1)
+                GLES30.glGenFramebuffers(1, displayFramebufferIds, 0)
+                GLES30.glGenTextures(1, displayTextureIds, 0)
+                presentationFramebuffer = displayFramebufferIds[0]
+                presentationTexture = displayTextureIds[0]
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, presentationTexture)
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, hardwareTargetWidth, hardwareTargetHeight, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, presentationFramebuffer)
+                GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, presentationTexture, 0)
+                if (GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+                    GLES30.glDeleteFramebuffers(1, displayFramebufferIds, 0)
+                    GLES30.glDeleteTextures(1, displayTextureIds, 0)
+                    presentationFramebuffer = 0
+                    presentationTexture = 0
+                } else {
+                    GLES20.glClearColor(0f, 0f, 0f, 1f)
+                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                }
+            }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             NativeCoreBridge.setHardwareFramebuffer(hardwareFramebuffer)
         }
@@ -664,8 +703,33 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         }
 
         fun hasHardwareTarget() = hardwareFramebuffer != 0 && hardwareTexture != 0
+        fun hasStablePresentationTarget() = presentationFramebuffer != 0 && presentationTexture != 0
         fun hardwareWidth() = hardwareTargetWidth
         fun hardwareHeight() = hardwareTargetHeight
+
+        fun snapshotHardwareFrame() {
+            if (hardwareFramebuffer == 0 || presentationFramebuffer == 0) return
+            val previousReadFramebuffer = IntArray(1)
+            val previousDrawFramebuffer = IntArray(1)
+            val scissorEnabled = GLES30.glIsEnabled(GLES30.GL_SCISSOR_TEST)
+            GLES30.glGetIntegerv(GLES30.GL_READ_FRAMEBUFFER_BINDING, previousReadFramebuffer, 0)
+            GLES30.glGetIntegerv(GLES30.GL_DRAW_FRAMEBUFFER_BINDING, previousDrawFramebuffer, 0)
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, hardwareFramebuffer)
+            GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0)
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, presentationFramebuffer)
+            GLES30.glDrawBuffers(1, intArrayOf(GLES30.GL_COLOR_ATTACHMENT0), 0)
+            GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+            val copyWidth = NativeCoreBridge.frameWidth().coerceIn(1, hardwareTargetWidth)
+            val copyHeight = NativeCoreBridge.frameHeight().coerceIn(1, hardwareTargetHeight)
+            GLES30.glBlitFramebuffer(
+                0, 0, copyWidth, copyHeight,
+                0, 0, copyWidth, copyHeight,
+                GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST,
+            )
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, previousReadFramebuffer[0])
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, previousDrawFramebuffer[0])
+            if (scissorEnabled) GLES20.glEnable(GLES20.GL_SCISSOR_TEST) else GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+        }
 
         fun presentHardwareFrame(viewport: IntArray) {
             if (hardwareFramebuffer == 0) return
@@ -680,8 +744,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             val scissorEnabled = GLES30.glIsEnabled(GLES30.GL_SCISSOR_TEST)
             GLES30.glGetIntegerv(GLES30.GL_READ_FRAMEBUFFER_BINDING, previousReadFramebuffer, 0)
             GLES30.glGetIntegerv(GLES30.GL_DRAW_FRAMEBUFFER_BINDING, previousDrawFramebuffer, 0)
-            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, hardwareFramebuffer)
+            val sourceFramebuffer = presentationFramebuffer.takeIf { it != 0 } ?: hardwareFramebuffer
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, sourceFramebuffer)
+            GLES30.glReadBuffer(GLES30.GL_COLOR_ATTACHMENT0)
             GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0)
+            GLES30.glDrawBuffers(1, intArrayOf(GLES30.GL_BACK), 0)
             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
             GLES30.glClearBufferfv(GLES30.GL_COLOR, 0, floatArrayOf(0f, 0f, 0f, 1f), 0)
             val sourceWidth = NativeCoreBridge.frameWidth().coerceIn(1, hardwareTargetWidth)

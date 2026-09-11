@@ -22,10 +22,10 @@ The ARM64 test build also bundles the following official Android libretro core b
 - Mupen64Plus-Next — https://github.com/libretro/mupen64plus-libretro-nx
 - Flycast — https://github.com/flyinghead/flycast
 - Dolphin — https://github.com/libretro/dolphin
-- PCSX2 — https://github.com/libretro/pcsx2
+- Play! — https://github.com/jpd002/Play-
 
 Binary source directory: https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/
 
 The five buildbot binaries that shared the generic `libretro.so` ELF soname have that soname made unique during packaging so Android can load multiple cores in one process. No executable code was changed.
 
-The software-rendered cores are launch-enabled in this build. Hardware-rendered cores are packaged and registered, but remain visibly gated until the Vulkan/OpenGL hardware-context frontend is validated on Android. No games, BIOS files, firmware, or copyrighted assets are included.
+The software-rendered cores and the validated GLES3 hardware-rendered cores are launch-enabled in this build. Vulkan remains the preferred backend where a core-specific Vulkan interface is available; the current Android fallback uses the shared GLES3 context path. No games, BIOS files, firmware, or copyrighted assets are included.

@@ -8,7 +8,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -17,8 +16,6 @@ class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
     private lateinit var surfaceHost: FrameLayout
     private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
-    private var landscapeLeft: LinearLayout? = null
-    private var landscapeRight: LinearLayout? = null
     // Rotation can destroy/recreate a window while Android reports the old
     // Activity as finishing. Only an explicit user exit is allowed to stop
     // the native session; configuration changes must leave it alive.
@@ -77,71 +74,66 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     private fun applySessionLayout(orientation: Int) {
-        val body = findViewById<LinearLayout>(R.id.sessionBody)
         val controls = findViewById<FrameLayout>(R.id.gameControls)
-        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            if (landscapeLeft == null) {
-                val directionalPad = findViewById<View>(R.id.directionalPad)
-                val actionButtons = findViewById<View>(R.id.actionButtons)
-                val centerButtons = findViewById<View>(R.id.centerButtons)
-                controls.removeView(directionalPad)
-                controls.removeView(actionButtons)
-                controls.removeView(centerButtons)
-                body.removeView(controls)
+        val directionalPad = findViewById<View>(R.id.directionalPad)
+        val actionButtons = findViewById<View>(R.id.actionButtons)
+        val centerButtons = findViewById<View>(R.id.centerButtons)
 
-                val left = LinearLayout(this).apply {
-                    this.orientation = LinearLayout.VERTICAL
-                    gravity = android.view.Gravity.CENTER
-                    addView(directionalPad, LinearLayout.LayoutParams(dp(164), dp(164)))
-                }
-                val right = LinearLayout(this).apply {
-                    this.orientation = LinearLayout.VERTICAL
-                    gravity = android.view.Gravity.CENTER
-                    addView(actionButtons, LinearLayout.LayoutParams(dp(178), LinearLayout.LayoutParams.WRAP_CONTENT))
-                    addView(centerButtons, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                        topMargin = dp(12)
-                    })
-                }
-                landscapeLeft = left
-                landscapeRight = right
-                body.orientation = LinearLayout.HORIZONTAL
-                // Keep surfaceHost (and therefore GLSurfaceView) attached to
-                // the window. Only the non-GL control wrappers are inserted
-                // around it; detaching an ancestor of a live GLSurfaceView
-                // can still tear down its EGL surface during rotation.
-                body.addView(left, 0, LinearLayout.LayoutParams(dp(176), LinearLayout.LayoutParams.MATCH_PARENT))
-                val surfaceIndex = body.indexOfChild(surfaceHost)
-                body.addView(right, surfaceIndex + 1, LinearLayout.LayoutParams(dp(184), LinearLayout.LayoutParams.MATCH_PARENT))
-                surfaceHost.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+        // Keep both the GLSurfaceView host and the control overlay attached to
+        // the same permanent FrameLayout. Reparenting a SurfaceView while the
+        // phone returns from landscape can destroy its window and end the
+        // active libretro session even when the Activity itself survives.
+        controls.layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            surfaceHost.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                leftMargin = dp(176)
+                rightMargin = dp(184)
+            }
+            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(156), dp(156)).apply {
+                gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+                leftMargin = dp(10)
+            }
+            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(178), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
+                rightMargin = dp(4)
+            }
+            centerButtons.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
+                rightMargin = dp(18)
+                bottomMargin = dp(14)
             }
         } else {
-            body.orientation = LinearLayout.VERTICAL
-            landscapeLeft?.let { body.removeView(it) }
-            landscapeRight?.let { body.removeView(it) }
-            if (landscapeLeft != null) {
-                val directionalPad = findViewById<View>(R.id.directionalPad)
-                val actionButtons = findViewById<View>(R.id.actionButtons)
-                val centerButtons = findViewById<View>(R.id.centerButtons)
-                landscapeLeft?.removeView(directionalPad)
-                landscapeRight?.removeView(actionButtons)
-                landscapeRight?.removeView(centerButtons)
-                controls.addView(directionalPad, FrameLayout.LayoutParams(dp(156), dp(156)).apply {
-                    gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
-                })
-                controls.addView(actionButtons, FrameLayout.LayoutParams(dp(170), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                    gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
-                })
-                controls.addView(centerButtons, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                    gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
-                })
-                val surfaceIndex = body.indexOfChild(surfaceHost)
-                body.addView(controls, surfaceIndex + 1, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240)))
-                surfaceHost.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-                landscapeLeft = null
-                landscapeRight = null
-            } else {
-                surfaceHost.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-                controls.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240))
+            surfaceHost.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply {
+                bottomMargin = dp(240)
+            }
+            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(156), dp(156)).apply {
+                gravity = android.view.Gravity.START or android.view.Gravity.BOTTOM
+                leftMargin = dp(12)
+                bottomMargin = dp(42)
+            }
+            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(170), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
+                rightMargin = dp(12)
+                bottomMargin = dp(36)
+            }
+            centerButtons.layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
+                bottomMargin = dp(8)
             }
         }
     }

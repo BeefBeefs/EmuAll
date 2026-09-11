@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.graphics.Bitmap
 import android.opengl.GLES20
+import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.os.Process
 import android.util.AttributeSet
@@ -38,6 +39,8 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var hardwareAudioRunning: AtomicBoolean? = null
     private var hardwareAudioThread: Thread? = null
     private var statusCallback: ((String) -> Unit)? = null
+    @Volatile private var glSurfaceWidth = 0
+    @Volatile private var glSurfaceHeight = 0
 
     private data class HardwareSession(
         val corePath: String,
@@ -236,11 +239,25 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     /** Runs one hardware frame on the GLSurfaceView thread, where the GL context is current. */
     private fun renderHardwareFrame() {
-        // Establish a non-zero viewport before starting a core.  Several
-        // hardware renderers inspect GL_VIEWPORT while their context_reset
-        // callback initializes framebuffers during the first start.
-        GLES20.glViewport(0, 0, getWidth(), getHeight())
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        val width = glSurfaceWidth
+        val height = glSurfaceHeight
+        // GLSurfaceView can schedule its first draw before the host has a
+        // measured size. Starting a core in that window permanently gives
+        // some renderers the tiny bootstrap viewport (the PSP symptom was a
+        // 310x176 image in a portrait surface). Wait for a real surface size.
+        if (width <= 1 || height <= 1) return
+        // Hardware cores render into a frontend-owned GLES framebuffer. This
+        // keeps their fixed 480p/PSP-sized backbuffer independent from the
+        // phone's portrait dimensions and lets us scale it cleanly below.
+        gameRenderer.ensureHardwareTarget()
+        if (gameRenderer.hasHardwareTarget()) {
+            gameRenderer.bindHardwareTarget()
+            GLES20.glViewport(0, 0, gameRenderer.hardwareWidth(), gameRenderer.hardwareHeight())
+        } else {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, width, height)
+        }
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
         startHardwareSessionIfNeeded()
         if (!hardwareStarted.get()) return
         val session = hardwareSession ?: return
@@ -260,8 +277,54 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             }
             statusCallback?.invoke(message)
         }
+
+        // Hardware cores render into the frontend-owned target. Keep that
+        // output aspect-correct and letterboxed rather than stretching it to
+        // the phone's current orientation. The ratio comes from the
+        // core's libretro AV geometry (PSP 16:9, N64/GC/PS2 4:3 by default,
+        // and any core-specific runtime geometry when available).
+        val aspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
+        val viewport = fitViewport(width, height, aspect)
+        if (gameRenderer.hasHardwareTarget()) {
+            gameRenderer.bindHardwareTarget()
+            GLES20.glViewport(0, 0, gameRenderer.hardwareWidth(), gameRenderer.hardwareHeight())
+        } else {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, width, height)
+        }
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
         NativeCoreBridge.runFrame()
+        gameRenderer.presentHardwareFrame(viewport)
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
+    }
+
+    /** Re-lays out the controls without pausing or reparenting the EGL view. */
+    fun onLayoutChanged() {
+        requestRender()
+        queueEvent {
+            val width = glSurfaceWidth
+            val height = glSurfaceHeight
+            if (width > 1 && height > 1) {
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                GLES20.glViewport(0, 0, width, height)
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            }
+            requestRender()
+        }
+    }
+
+    private fun fitViewport(width: Int, height: Int, aspect: Double?): IntArray {
+        if (aspect == null) return intArrayOf(0, 0, width, height)
+        val surfaceAspect = width.toDouble() / height.toDouble()
+        return if (surfaceAspect > aspect) {
+            val viewportHeight = height
+            val viewportWidth = (viewportHeight * aspect).toInt().coerceAtLeast(1)
+            intArrayOf((width - viewportWidth) / 2, 0, viewportWidth, viewportHeight)
+        } else {
+            val viewportWidth = width
+            val viewportHeight = (viewportWidth / aspect).toInt().coerceAtLeast(1)
+            intArrayOf(0, (height - viewportHeight) / 2, viewportWidth, viewportHeight)
+        }
     }
 
     private fun stopHardwareSession() {
@@ -354,13 +417,27 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         private var textureWidth = 0
         private var textureHeight = 0
         private var textureFormat = 0
+        private var hardwareFramebuffer = 0
+        private var hardwareTexture = 0
+        private var hardwareDepthStencil = 0
+        private var hardwareTargetWidth = 640
+        private var hardwareTargetHeight = 480
         private var positionLocation = -1
         private var textureCoordinateLocation = -1
+        private val hardwareVertices: FloatBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
+            // GLES textures use a bottom-left origin; hardware output should
+            // not receive the software path's vertical flip.
+            put(floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)); position(0)
+        }
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             textureWidth = 0
             textureHeight = 0
             textureFormat = 0
+            hardwareFramebuffer = 0
+            hardwareTexture = 0
+            hardwareDepthStencil = 0
+            NativeCoreBridge.setHardwareFramebuffer(0)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             val vertex = shader(GLES20.GL_VERTEX_SHADER, "attribute vec2 p;attribute vec2 t;varying vec2 uv;void main(){gl_Position=vec4(p,0.,1.);uv=t;}")
             val fragment = shader(GLES20.GL_FRAGMENT_SHADER, "precision mediump float;uniform sampler2D s;varying vec2 uv;void main(){gl_FragColor=texture2D(s,uv);}")
@@ -373,12 +450,92 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-            if (hardwareRendering && hardwareStarted.get()) NativeCoreBridge.hardwareContextReset()
+            if (hardwareRendering && hardwareSession != null) {
+                ensureHardwareTarget()
+                if (hardwareStarted.get()) NativeCoreBridge.hardwareContextReset()
+            }
             post { requestRender() }
         }
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
             surfaceWidth = width; surfaceHeight = height
+            glSurfaceWidth = width; glSurfaceHeight = height
             requestRender()
+        }
+
+        fun ensureHardwareTarget() {
+            if (!hardwareRendering || hardwareFramebuffer != 0) return
+            val coreName = hardwareSession?.coreName?.lowercase().orEmpty()
+            if (coreName.contains("ppsspp")) {
+                hardwareTargetWidth = 480
+                hardwareTargetHeight = 272
+            } else {
+                // N64, Dreamcast, GameCube/Wii and Play! advertise a 4:3
+                // 640x480-style backbuffer. The core can still change its
+                // runtime geometry; the final presentation uses that ratio.
+                hardwareTargetWidth = 640
+                hardwareTargetHeight = 480
+            }
+            val framebufferIds = IntArray(1)
+            val textureIds = IntArray(1)
+            val renderbufferIds = IntArray(1)
+            GLES30.glGenFramebuffers(1, framebufferIds, 0)
+            GLES30.glGenTextures(1, textureIds, 0)
+            GLES30.glGenRenderbuffers(1, renderbufferIds, 0)
+            hardwareFramebuffer = framebufferIds[0]
+            hardwareTexture = textureIds[0]
+            hardwareDepthStencil = renderbufferIds[0]
+
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, hardwareTexture)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, hardwareTargetWidth, hardwareTargetHeight, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+
+            GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, hardwareDepthStencil)
+            GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH24_STENCIL8, hardwareTargetWidth, hardwareTargetHeight)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, hardwareFramebuffer)
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, hardwareTexture, 0)
+            GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT, GLES30.GL_RENDERBUFFER, hardwareDepthStencil)
+            GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_STENCIL_ATTACHMENT, GLES30.GL_RENDERBUFFER, hardwareDepthStencil)
+            if (GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) != GLES30.GL_FRAMEBUFFER_COMPLETE) {
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                GLES30.glDeleteFramebuffers(1, framebufferIds, 0)
+                GLES30.glDeleteTextures(1, textureIds, 0)
+                GLES30.glDeleteRenderbuffers(1, renderbufferIds, 0)
+                hardwareFramebuffer = 0
+                hardwareTexture = 0
+                hardwareDepthStencil = 0
+                NativeCoreBridge.setHardwareFramebuffer(0)
+                return
+            }
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            NativeCoreBridge.setHardwareFramebuffer(hardwareFramebuffer)
+        }
+
+        fun bindHardwareTarget() {
+            if (hardwareFramebuffer != 0) GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, hardwareFramebuffer)
+        }
+
+        fun hasHardwareTarget() = hardwareFramebuffer != 0 && hardwareTexture != 0
+        fun hardwareWidth() = hardwareTargetWidth
+        fun hardwareHeight() = hardwareTargetHeight
+
+        fun presentHardwareFrame(viewport: IntArray) {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            if (hardwareTexture == 0) return
+            GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
+            GLES20.glUseProgram(program)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, hardwareTexture)
+            hardwareVertices.position(0)
+            GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 16, hardwareVertices)
+            GLES20.glEnableVertexAttribArray(positionLocation)
+            hardwareVertices.position(2)
+            GLES20.glVertexAttribPointer(textureCoordinateLocation, 2, GLES20.GL_FLOAT, false, 16, hardwareVertices)
+            GLES20.glEnableVertexAttribArray(textureCoordinateLocation)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
         override fun onDrawFrame(gl: GL10?) {
             if (hardwareRendering) {

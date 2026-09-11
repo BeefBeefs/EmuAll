@@ -19,11 +19,13 @@ object NativeCoreBridge {
 
     external fun frontendVersion(): String
     external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, hardwareRendering: Boolean): Boolean
+    external fun setHardwareFramebuffer(framebuffer: Int)
     external fun hardwareContextReset()
     external fun runFrame()
     external fun copyFrame(destination: java.nio.ByteBuffer): Int
     external fun frameWidth(): Int
     external fun frameHeight(): Int
+    external fun videoAspectRatio(): Float
     external fun pixelFormat(): Int
     external fun drainAudio(destination: ShortArray): Int
     external fun sampleRate(): Int

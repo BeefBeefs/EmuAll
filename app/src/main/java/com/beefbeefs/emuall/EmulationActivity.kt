@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
+    private lateinit var surfaceHost: FrameLayout
     private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
     private var landscapeLeft: LinearLayout? = null
     private var landscapeRight: LinearLayout? = null
@@ -22,6 +23,7 @@ class EmulationActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState); setContentView(R.layout.activity_emulation)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         surface = findViewById(R.id.gameSurface)
+        surfaceHost = findViewById(R.id.surfaceHost)
         applySessionLayout(resources.configuration.orientation)
         val rom = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         val save = intent.getStringExtra(EXTRA_SAVE) ?: return finish()
@@ -57,14 +59,13 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
-        // Moving a GLSurfaceView between parents during a live orientation
-        // change can invalidate its EGL surface. Pause rendering around the
-        // reparent, then explicitly request a fresh frame after the new layout.
-        surface.onPause()
         super.onConfigurationChanged(newConfig)
+        // Keep the GLSurfaceView in the same host for the entire session. A
+        // live EGL context must not be paused or reparented while a libretro
+        // core is running; doing that leaves most hardware cores drawing into
+        // a destroyed surface after the rotation.
         applySessionLayout(newConfig.orientation)
-        surface.onResume()
-        surface.requestRender()
+        surface.post { surface.onLayoutChanged() }
     }
 
     private fun applySessionLayout(orientation: Int) {
@@ -96,9 +97,9 @@ class EmulationActivity : AppCompatActivity() {
                 landscapeLeft = left
                 landscapeRight = right
                 body.orientation = LinearLayout.HORIZONTAL
-                body.removeView(surface)
+                body.removeView(surfaceHost)
                 body.addView(left, LinearLayout.LayoutParams(dp(176), LinearLayout.LayoutParams.MATCH_PARENT))
-                body.addView(surface, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+                body.addView(surfaceHost, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
                 body.addView(right, LinearLayout.LayoutParams(dp(184), LinearLayout.LayoutParams.MATCH_PARENT))
             }
         } else {
@@ -106,22 +107,28 @@ class EmulationActivity : AppCompatActivity() {
             landscapeLeft?.let { body.removeView(it) }
             landscapeRight?.let { body.removeView(it) }
             if (landscapeLeft != null) {
-                body.removeView(surface)
-                controls.addView(findViewById<View>(R.id.directionalPad), FrameLayout.LayoutParams(dp(156), dp(156)).apply {
+                body.removeView(surfaceHost)
+                val directionalPad = findViewById<View>(R.id.directionalPad)
+                val actionButtons = findViewById<View>(R.id.actionButtons)
+                val centerButtons = findViewById<View>(R.id.centerButtons)
+                landscapeLeft?.removeView(directionalPad)
+                landscapeRight?.removeView(actionButtons)
+                landscapeRight?.removeView(centerButtons)
+                controls.addView(directionalPad, FrameLayout.LayoutParams(dp(156), dp(156)).apply {
                     gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
                 })
-                controls.addView(findViewById<View>(R.id.actionButtons), FrameLayout.LayoutParams(dp(170), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                controls.addView(actionButtons, FrameLayout.LayoutParams(dp(170), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                     gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
                 })
-                controls.addView(findViewById<View>(R.id.centerButtons), FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                controls.addView(centerButtons, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                     gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
                 })
-                body.addView(surface, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                body.addView(surfaceHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                 body.addView(controls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240)))
                 landscapeLeft = null
                 landscapeRight = null
             } else {
-                surface.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+                surfaceHost.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
                 controls.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240))
             }
         }

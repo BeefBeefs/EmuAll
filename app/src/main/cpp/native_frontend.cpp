@@ -52,9 +52,11 @@ struct Session {
     std::atomic<uint32_t> inputMask{0};
     unsigned width{};
     unsigned height{};
+    double videoAspectRatio{};
     unsigned pixelFormat{RETRO_PIXEL_FORMAT_RGB565};
     double fps{59.7275};
     double sampleRate{32768.0};
+    uintptr_t hardwareFramebuffer{};
     std::string savePath;
     std::string systemDirectory;
     std::string saveDirectory;
@@ -76,7 +78,7 @@ void core_log(enum retro_log_level level, const char* format, ...) {
     va_end(args);
 }
 
-uintptr_t hardware_framebuffer() { return 0; }
+uintptr_t hardware_framebuffer() { return g.hardwareFramebuffer; }
 retro_proc_address_t hardware_proc_address(const char* symbol) {
     return reinterpret_cast<retro_proc_address_t>(eglGetProcAddress(symbol));
 }
@@ -116,6 +118,26 @@ bool environment(unsigned command, void* data) {
             auto format = *static_cast<const retro_pixel_format*>(data);
             if (format != RETRO_PIXEL_FORMAT_RGB565 && format != RETRO_PIXEL_FORMAT_XRGB8888) return false;
             g.pixelFormat = format;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_GEOMETRY: {
+            if (!data) return false;
+            const auto* geometry = static_cast<const retro_game_geometry*>(data);
+            if (geometry->aspect_ratio > 0.0)
+                g.videoAspectRatio = geometry->aspect_ratio;
+            else if (geometry->base_height)
+                g.videoAspectRatio = static_cast<double>(geometry->base_width) / geometry->base_height;
+            return true;
+        }
+        case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
+            if (!data) return false;
+            const auto* av = static_cast<const retro_system_av_info*>(data);
+            if (av->geometry.aspect_ratio > 0.0)
+                g.videoAspectRatio = av->geometry.aspect_ratio;
+            else if (av->geometry.base_height)
+                g.videoAspectRatio = static_cast<double>(av->geometry.base_width) / av->geometry.base_height;
+            if (av->timing.fps > 0.0) g.fps = av->timing.fps;
+            if (av->timing.sample_rate > 0.0) g.sampleRate = av->timing.sample_rate;
             return true;
         }
         case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
@@ -318,7 +340,7 @@ void stop_session() {
     if (g.initialized) { g.api.deinit(); g.initialized = false; }
     if (g.api.handle) dlclose(g.api.handle);
     g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear();
-    g.width = 0; g.height = 0; g.hardwareRendering = false;
+    g.width = 0; g.height = 0; g.videoAspectRatio = 0.0; g.hardwareFramebuffer = 0; g.hardwareRendering = false;
     g.hardwareContextConfigured = false; g.hardwareCallback = {};
 }
 
@@ -338,14 +360,20 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_start(
         JNIEnv* env, jobject, jstring corePath, jstring romPath, jstring savePath, jstring systemDirectory,
         jboolean hardwareRendering) {
-    stop_session(); g.lastError.clear();
+    // The GL view binds its frontend FBO before starting the core. Preserve
+    // that ID across the session cleanup below; otherwise stop_session()
+    // would erase it just before retro_load_game() negotiates hardware
+    // rendering and the core would silently fall back to framebuffer 0.
+    const uintptr_t requestedFramebuffer = g.hardwareFramebuffer;
+    stop_session();
+    g.hardwareFramebuffer = requestedFramebuffer;
+    g.lastError.clear();
     g.hardwareRendering = hardwareRendering == JNI_TRUE;
     g.savePath = from_java(env, savePath); g.systemDirectory = from_java(env, systemDirectory);
     size_t slash = g.savePath.find_last_of('/');
     g.saveDirectory = slash == std::string::npos ? g.systemDirectory : g.savePath.substr(0, slash);
     std::string core = from_java(env, corePath), romPathValue = from_java(env, romPath);
     if (!load_api(core.c_str())) return false;
-    if (!read_file(romPathValue, g.rom)) { g.lastError = "Could not read game"; stop_session(); return false; }
     g.api.setEnvironment(environment); g.api.setVideoRefresh(video);
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);
@@ -357,13 +385,23 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     // the game has requested them and the Android GL context is current.
     if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
     retro_system_info systemInfo{}; g.api.getSystemInfo(&systemInfo);
+    // Disc-based cores (Dolphin, Flycast and several PSP builds) set
+    // need_fullpath because they stream large images from disk. Reading a
+    // 1.3 GB GameCube ISO into g.rom first can exhaust a phone's heap and
+    // terminate the app before the core even gets a chance to reject or boot
+    // the file. Only in-memory cores need the frontend-owned ROM buffer.
+    if (!systemInfo.need_fullpath && !read_file(romPathValue, g.rom)) {
+        g.lastError = "Could not read game";
+        stop_session();
+        return false;
+    }
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();
     game.size = systemInfo.need_fullpath ? 0 : g.rom.size();
     if (!g.api.loadGame(&game)) { g.lastError = "The selected core rejected this file"; stop_session(); return false; }
     if (g.hardwareRendering) {
         if (!g.hardwareContextConfigured || !g.hardwareCallback.context_reset) {
-            g.lastError = "The N64 core did not negotiate a supported GLES3 graphics context";
+            g.lastError = "The core did not negotiate a supported GLES3 graphics context";
             stop_session();
             return false;
         }
@@ -371,6 +409,9 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     }
     g.gameLoaded = true;
     retro_system_av_info av{}; g.api.getSystemAvInfo(&av); g.fps = av.timing.fps; g.sampleRate = av.timing.sample_rate;
+    g.videoAspectRatio = av.geometry.aspect_ratio > 0.0
+        ? av.geometry.aspect_ratio
+        : (av.geometry.base_height ? static_cast<double>(av.geometry.base_width) / av.geometry.base_height : 0.0);
     std::vector<uint8_t> save;
     if (read_file(g.savePath, save)) {
         size_t size = g.api.memorySize(RETRO_MEMORY_SAVE_RAM); void* memory = g.api.memoryData(RETRO_MEMORY_SAVE_RAM);
@@ -383,6 +424,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_har
     if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setHardwareFramebuffer(JNIEnv*, jobject, jint framebuffer) {
+    g.hardwareFramebuffer = framebuffer > 0 ? static_cast<uintptr_t>(framebuffer) : 0;
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) { if (g.gameLoaded) g.api.run(); }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_copyFrame(JNIEnv* env, jobject, jobject output) {
     void* target = env->GetDirectBufferAddress(output); jlong capacity = env->GetDirectBufferCapacity(output);
@@ -392,6 +437,9 @@ extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_cop
 }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_frameWidth(JNIEnv*, jobject) { return g.width; }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_frameHeight(JNIEnv*, jobject) { return g.height; }
+extern "C" JNIEXPORT jfloat JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_videoAspectRatio(JNIEnv*, jobject) {
+    return static_cast<jfloat>(g.videoAspectRatio);
+}
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_pixelFormat(JNIEnv*, jobject) { return g.pixelFormat; }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_drainAudio(JNIEnv* env, jobject, jshortArray output) {
     jsize capacity = env->GetArrayLength(output);

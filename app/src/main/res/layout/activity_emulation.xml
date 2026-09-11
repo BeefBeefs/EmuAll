@@ -28,11 +28,18 @@
         android:layout_weight="1"
         android:orientation="vertical">
 
-        <com.beefbeefs.emuall.GameSurfaceView
-            android:id="@+id/gameSurface"
+        <FrameLayout
+            android:id="@+id/surfaceHost"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1" />
+            android:layout_weight="1"
+            android:background="#000000">
+
+            <com.beefbeefs.emuall.GameSurfaceView
+                android:id="@+id/gameSurface"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
 
         <FrameLayout
             android:id="@+id/gameControls"

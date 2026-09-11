@@ -17,8 +17,8 @@ class EmulationActivity : AppCompatActivity() {
         val rom = intent.getStringExtra(EXTRA_ROM) ?: return finish()
         val save = intent.getStringExtra(EXTRA_SAVE) ?: return finish()
         bindControls()
-        surface.start("libmgba_libretro.so", rom, save, filesDir.absolutePath) { error ->
-            findViewById<TextView>(R.id.sessionStatus).text = error ?: "mGBA · Running"
+        surface.start("libmgba_libretro.so", rom, save, filesDir.absolutePath) { status ->
+            findViewById<TextView>(R.id.sessionStatus).text = status
         }
         findViewById<Button>(R.id.menuButton).setOnClickListener { finish() }
         findViewById<Button>(R.id.pauseButton).setOnClickListener { button ->

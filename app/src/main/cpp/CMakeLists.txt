@@ -20,9 +20,14 @@ set(USE_LIBZIP OFF CACHE BOOL "" FORCE)
 set(USE_LZMA OFF CACHE BOOL "" FORCE)
 add_subdirectory(cores/mgba mgba-build EXCLUDE_FROM_ALL)
 set_target_properties(mgba_libretro PROPERTIES PREFIX "lib")
+# CI intentionally creates a debug-signed APK so testers can install it directly.
+# Do not let that turn the emulator core into an -O0 build: native core performance
+# is representative of release builds even when the Android package is debuggable.
+target_compile_options(mgba_libretro PRIVATE -O3 -DNDEBUG)
 
 add_library(emuall_frontend SHARED native_frontend.cpp)
 add_dependencies(emuall_frontend mgba_libretro)
+target_compile_options(emuall_frontend PRIVATE -O2)
 
 find_library(log-lib log)
 find_library(android-lib android)

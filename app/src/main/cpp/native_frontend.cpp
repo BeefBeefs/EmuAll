@@ -262,11 +262,20 @@ extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_fra
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_frameHeight(JNIEnv*, jobject) { return g.height; }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_pixelFormat(JNIEnv*, jobject) { return g.pixelFormat; }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_drainAudio(JNIEnv* env, jobject, jshortArray output) {
-    jsize capacity = env->GetArrayLength(output); std::vector<int16_t> samples;
-    { std::lock_guard lock(g.audioMutex); size_t count = std::min(static_cast<size_t>(capacity), g.audio.size());
-      samples.reserve(count); while (count--) { samples.push_back(g.audio.front()); g.audio.pop_front(); } }
-    if (!samples.empty()) env->SetShortArrayRegion(output, 0, samples.size(), samples.data());
-    return samples.size();
+    jsize capacity = env->GetArrayLength(output);
+    jshort* target = env->GetShortArrayElements(output, nullptr);
+    if (!target) return 0;
+    size_t count;
+    {
+        std::lock_guard lock(g.audioMutex);
+        count = std::min(static_cast<size_t>(capacity), g.audio.size());
+        for (size_t index = 0; index < count; ++index) {
+            target[index] = g.audio.front();
+            g.audio.pop_front();
+        }
+    }
+    env->ReleaseShortArrayElements(output, target, 0);
+    return static_cast<jint>(count);
 }
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_sampleRate(JNIEnv*, jobject) { return static_cast<jint>(g.sampleRate + .5); }
 extern "C" JNIEXPORT jdouble JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_framesPerSecond(JNIEnv*, jobject) { return g.fps; }

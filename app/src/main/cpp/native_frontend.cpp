@@ -76,8 +76,6 @@ void core_log(enum retro_log_level level, const char* format, ...) {
     va_end(args);
 }
 
-void hardware_context_reset() {}
-void hardware_context_destroy() {}
 uintptr_t hardware_framebuffer() { return 0; }
 retro_proc_address_t hardware_proc_address(const char* symbol) {
     return reinterpret_cast<retro_proc_address_t>(eglGetProcAddress(symbol));
@@ -90,13 +88,19 @@ bool environment(unsigned command, void* data) {
             auto* callback = static_cast<retro_hw_render_callback*>(data);
             // The first hardware path is deliberately GLES3. Vulkan cores can
             // be added later through the separate libretro Vulkan interface.
-            if (callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
-                callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION) return false;
+            if (callback->context_type == RETRO_HW_CONTEXT_VULKAN ||
+                (callback->context_type != RETRO_HW_CONTEXT_OPENGL &&
+                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
+                 callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
+                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
+                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION)) return false;
             callback->context_type = RETRO_HW_CONTEXT_OPENGLES3;
             callback->version_major = 3;
             callback->version_minor = 0;
-            callback->context_reset = hardware_context_reset;
-            callback->context_destroy = hardware_context_destroy;
+            // context_reset/context_destroy belong to the core. The frontend
+            // invokes those callbacks after creating or losing its GL context;
+            // replacing them with no-ops prevents cores from initializing GL
+            // resources and can crash on the first ROM frame.
             callback->get_current_framebuffer = hardware_framebuffer;
             callback->get_proc_address = hardware_proc_address;
             callback->cache_context = true;
@@ -311,6 +315,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);
     g.api.init(); g.initialized = true;
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
     retro_system_info systemInfo{}; g.api.getSystemInfo(&systemInfo);
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();

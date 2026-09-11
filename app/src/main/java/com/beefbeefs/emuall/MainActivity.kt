@@ -261,6 +261,7 @@ class MainActivity : AppCompatActivity() {
                 local.save.parentFile?.mkdirs()
                 val cached = recent?.cachedRomPath?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
                 val rom = cached ?: prepareRom(uri, name, systemId, romDirectory)
+                validatePreparedRom(rom, systemId)
                 recentStore.touch(uri, rom.absolutePath)
                 runOnUiThread {
                     startActivity(Intent(this, EmulationActivity::class.java).apply {
@@ -291,6 +292,18 @@ class MainActivity : AppCompatActivity() {
             "zip" -> extractZip(source, key, systemId, romDirectory)
             "7z" -> extractSevenZip(source, key, systemId, romDirectory)
             else -> source
+        }
+    }
+
+    private fun validatePreparedRom(rom: File, systemId: String) {
+        if (systemId != "n64") return
+        FileInputStream(rom).use { input ->
+            val header = ByteArray(4)
+            require(input.read(header) == header.size) { "The selected file is too small to be an N64 ROM." }
+            val validHeader = header.contentEquals(byteArrayOf(0x80.toByte(), 0x37, 0x12, 0x40)) ||
+                header.contentEquals(byteArrayOf(0x37, 0x80.toByte(), 0x40, 0x12)) ||
+                header.contentEquals(byteArrayOf(0x40, 0x12, 0x37, 0x80.toByte()))
+            require(validHeader) { "The selected file does not have a valid N64 ROM header." }
         }
     }
 

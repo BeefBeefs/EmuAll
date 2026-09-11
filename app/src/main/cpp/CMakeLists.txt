@@ -18,8 +18,6 @@ set(USE_LUA OFF CACHE BOOL "" FORCE)
 set(USE_DISCORD_RPC OFF CACHE BOOL "" FORCE)
 set(USE_LIBZIP OFF CACHE BOOL "" FORCE)
 set(USE_LZMA OFF CACHE BOOL "" FORCE)
-set(M_CORE_GBA ON CACHE BOOL "" FORCE)
-set(M_CORE_GB OFF CACHE BOOL "" FORCE)
 add_subdirectory(cores/mgba mgba-build EXCLUDE_FROM_ALL)
 
 add_library(emuall_frontend SHARED native_frontend.cpp)

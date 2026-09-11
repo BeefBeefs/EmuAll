@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.StatFs
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.InputDevice
@@ -332,9 +333,18 @@ class MainActivity : AppCompatActivity() {
         val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val key = uri.toString().hashCode().toUInt().toString(16)
         val source = File(romDirectory, "${key}_$safeName")
+        val maxBytes = maxRomBytes(systemId)
+        val sourceSize = querySize(uri)
+        require(sourceSize <= 0L || sourceSize <= maxBytes) {
+            "The selected game is too large for Android preparation (${formatBytes(maxBytes)} limit)."
+        }
+        val available = StatFs(romDirectory.absolutePath).availableBytes
+        require(sourceSize <= 0L || available > sourceSize + MIN_FREE_SPACE_BYTES) {
+            "Not enough free storage to prepare this game file."
+        }
         contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Android could not open this game." }
-            source.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
+            writeLimited(input, source, maxBytes)
         }
         return when (name.substringAfterLast('.', "").lowercase()) {
             "zip" -> extractZip(source, key, systemId, romDirectory)
@@ -357,6 +367,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractZip(source: File, key: String, systemId: String, outputDirectory: File): File {
         val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
+        val maxBytes = maxRomBytes(systemId)
         var selected: File? = null
         ZipInputStream(BufferedInputStream(FileInputStream(source))).use { archive ->
             while (true) {
@@ -365,7 +376,7 @@ class MainActivity : AppCompatActivity() {
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
                     }
-                    writeLimited(archive, output)
+                    writeLimited(archive, output, maxBytes)
                     if (selected == null || archiveEntryPriority(entry.name) < archiveEntryPriority(selected!!.name)) {
                         selected = output
                     }
@@ -378,12 +389,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun extractSevenZip(source: File, key: String, systemId: String, outputDirectory: File): File {
         val extractionRoot = File(outputDirectory, "${key}_archive").apply { mkdirs() }
+        val maxBytes = maxRomBytes(systemId)
         var selected: File? = null
         SevenZFile(source).use { archive ->
             while (true) {
                 val entry = archive.nextEntry ?: break
                 if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
-                    require(entry.size <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                    require(entry.size <= maxBytes) { "The selected ROM is too large." }
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
                     }
@@ -394,7 +406,7 @@ class MainActivity : AppCompatActivity() {
                             val read = archive.read(buffer)
                             if (read <= 0) break
                             total += read
-                            require(total <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                            require(total <= maxBytes) { "The selected ROM is too large." }
                             destination.write(buffer, 0, read)
                         }
                     }
@@ -408,7 +420,7 @@ class MainActivity : AppCompatActivity() {
         throw IllegalArgumentException("No ${Systems.byId(systemId)?.shortName ?: systemId} game was found inside the 7z archive.")
     }
 
-    private fun writeLimited(input: java.io.InputStream, output: File) {
+    private fun writeLimited(input: java.io.InputStream, output: File, maxBytes: Long = MAX_ROM_BYTES) {
         FileOutputStream(output).use { destination ->
             val buffer = ByteArray(BUFFER_SIZE)
             var total = 0L
@@ -416,10 +428,31 @@ class MainActivity : AppCompatActivity() {
                 val read = input.read(buffer)
                 if (read <= 0) break
                 total += read
-                require(total <= MAX_ROM_BYTES) { "The selected ROM is too large." }
+                require(total <= maxBytes) { "The selected ROM is too large." }
                 destination.write(buffer, 0, read)
             }
         }
+    }
+
+    private fun querySize(uri: Uri): Long = contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.SIZE),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+        if (cursor.moveToFirst() && sizeColumn >= 0 && !cursor.isNull(sizeColumn)) cursor.getLong(sizeColumn) else -1L
+    } ?: -1L
+
+    private fun maxRomBytes(systemId: String): Long = when (systemId) {
+        "gamecube", "dreamcast", "psp", "ps2" -> MAX_DISC_IMAGE_BYTES
+        else -> MAX_ROM_BYTES
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L * 1024L -> "${bytes / (1024L * 1024L * 1024L)} GB"
+        else -> "${bytes / (1024L * 1024L)} MB"
     }
 
     private fun isSupportedEntry(name: String, systemId: String): Boolean {
@@ -687,6 +720,8 @@ class MainActivity : AppCompatActivity() {
         private const val BIOS_PREFS = "bios_locations"
         private const val BUFFER_SIZE = 64 * 1024
         private const val MAX_ROM_BYTES = 128L * 1024L * 1024L
+        private const val MAX_DISC_IMAGE_BYTES = 16L * 1024L * 1024L * 1024L
+        private const val MIN_FREE_SPACE_BYTES = 128L * 1024L * 1024L
         private const val MAX_BIOS_FILE_BYTES = 64L * 1024L * 1024L
     }
 }

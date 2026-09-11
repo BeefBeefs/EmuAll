@@ -55,7 +55,7 @@ object Systems {
         ),
         SystemDefinition(
             "gamecube", "GC / WII", "GameCube / Wii", "Dolphin",
-            setOf("elf", "iso", "gcm", "dol", "tgc", "wbfs", "ciso", "gcz", "wad", "rvz", "m3u"),
+            setOf("elf", "iso", "gcm", "dol", "tgc", "wbfs", "ciso", "gcz", "wad", "rvz", "m3u", "zip", "7z"),
             minimumGles = 0x00030000,
             integrationTier = IntegrationTier.HARDWARE,
             coreId = "dolphin",

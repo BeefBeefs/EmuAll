@@ -427,6 +427,17 @@ bool load_api(const char* path) {
     return true;
 }
 
+bool prefers_filesystem_game_path(const std::string& corePath) {
+    // These cores stream disc images from the path supplied in
+    // retro_game_info. Never copy a multi-gigabyte image into the frontend's
+    // in-memory ROM buffer even if a particular build reports
+    // need_fullpath incorrectly.
+    return corePath.find("dolphin") != std::string::npos ||
+        corePath.find("flycast") != std::string::npos ||
+        corePath.find("ppsspp") != std::string::npos ||
+        corePath.find("play_") != std::string::npos;
+}
+
 bool read_file(const std::string& path, std::vector<uint8_t>& output) {
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) return false;
@@ -566,14 +577,18 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     // 1.3 GB GameCube ISO into g.rom first can exhaust a phone's heap and
     // terminate the app before the core even gets a chance to reject or boot
     // the file. Only in-memory cores need the frontend-owned ROM buffer.
-    if (!systemInfo.need_fullpath && !read_file(romPathValue, g.rom)) {
+    const bool useFilesystemPath = systemInfo.need_fullpath || prefers_filesystem_game_path(core);
+    __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",
+        "Core game path mode: need_fullpath=%d filesystem=%d",
+        systemInfo.need_fullpath ? 1 : 0, useFilesystemPath ? 1 : 0);
+    if (!useFilesystemPath && !read_file(romPathValue, g.rom)) {
         g.lastError = "Could not read game";
         stop_session();
         return false;
     }
     retro_game_info game{}; game.path = romPathValue.c_str();
-    game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();
-    game.size = systemInfo.need_fullpath ? 0 : g.rom.size();
+    game.data = useFilesystemPath ? nullptr : g.rom.data();
+    game.size = useFilesystemPath ? 0 : g.rom.size();
     if (!call_core_bool("retro_load_game", [&] { return g.api.loadGame(&game); })) {
         if (g.lastError.empty() || g.lastError.rfind("retro_load_game failed", 0) != 0)
             g.lastError = "The selected core rejected this file";

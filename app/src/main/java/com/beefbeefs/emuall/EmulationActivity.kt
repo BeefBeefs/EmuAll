@@ -11,6 +11,7 @@ import android.widget.FrameLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
@@ -34,15 +35,19 @@ class EmulationActivity : AppCompatActivity() {
         val core = CoreRegistry.forSystem(systemId)
         val videoBackend = core?.let { GraphicsBackendSelector.select(this, it) } ?: VideoBackend.OPENGL_ES
         controllerMapping = ControllerMappingStore(this).mappingFor(systemId)
-        val coreLoadError = runCatching { NativeCoreBridge.ensureCoreLoaded(coreLibrary) }.exceptionOrNull()
-        if (coreLoadError != null) {
-            findViewById<TextView>(R.id.sessionStatus).text = "Could not load $coreName: ${coreLoadError.message ?: coreLoadError.javaClass.simpleName}"
+        // Pass an absolute path so dlopen can keep each core RTLD_LOCAL.  The
+        // old System.loadLibrary preloaded cores globally; large static
+        // libraries such as Dolphin and Flycast then interposed one another's
+        // symbols after switching systems in the same app process.
+        val corePath = File(applicationInfo.nativeLibraryDir, coreLibrary)
+        if (!corePath.isFile) {
+            findViewById<TextView>(R.id.sessionStatus).text = "Could not load $coreName: ${corePath.name} is not packaged for this device"
             finish()
             return
         }
         bindControls()
         val systemDirectory = intent.getStringExtra(EXTRA_SYSTEM_DIRECTORY) ?: filesDir.absolutePath
-        surface.start(coreLibrary, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
+        surface.start(corePath.absolutePath, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
             findViewById<TextView>(R.id.sessionStatus).text = status
         }
         if (intent.getBooleanExtra(EXTRA_AUTO_LOAD, false)) surface.quickLoad(intent.getIntExtra(EXTRA_AUTO_LOAD_SLOT, 1))

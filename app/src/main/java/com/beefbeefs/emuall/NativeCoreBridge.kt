@@ -1,20 +1,13 @@
 package com.beefbeefs.emuall
 
 object NativeCoreBridge {
-    private val loadedCoreLibraries = mutableSetOf<String>()
-
     init {
-        loadCoreLibrary(CoreRegistry.forSystem("gba")?.libraryName ?: "libmgba_libretro.so")
+        // Core DSOs are opened by the native frontend from their absolute
+        // extracted APK path.  Preloading every core with System.loadLibrary
+        // puts their large static symbol sets in one global namespace (Dolphin
+        // and Flycast share names such as Buf_*), which can make a later core
+        // resolve against the wrong implementation and crash on startup.
         System.loadLibrary("emuall_frontend")
-    }
-
-    /** Loads an additional registry-selected core into Android's native namespace. */
-    @Synchronized
-    fun ensureCoreLoaded(libraryName: String) = loadCoreLibrary(libraryName)
-
-    private fun loadCoreLibrary(libraryName: String) {
-        val soname = libraryName.removePrefix("lib").removeSuffix(".so")
-        if (loadedCoreLibraries.add(soname)) System.loadLibrary(soname)
     }
 
     external fun frontendVersion(): String

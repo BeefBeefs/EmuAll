@@ -306,14 +306,85 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun validatePreparedRom(rom: File, systemId: String) {
-        if (systemId != "n64") return
+        when (systemId) {
+            "n64" -> FileInputStream(rom).use { input ->
+                val header = ByteArray(4)
+                require(input.read(header) == header.size) { "The selected file is too small to be an N64 ROM." }
+                val validHeader = header.contentEquals(byteArrayOf(0x80.toByte(), 0x37, 0x12, 0x40)) ||
+                    header.contentEquals(byteArrayOf(0x37, 0x80.toByte(), 0x40, 0x12)) ||
+                    header.contentEquals(byteArrayOf(0x40, 0x12, 0x37, 0x80.toByte()))
+                require(validHeader) { "The selected file does not have a valid N64 ROM header." }
+            }
+            "gamecube" -> validateGameCubeDisc(rom)
+            "dreamcast", "ps1", "ps2" -> validateDiscSidecars(rom, systemId)
+        }
+    }
+
+    /**
+     * Descriptor files are harmless to copy, but a core that receives a GDI,
+     * CUE, or M3U without its referenced tracks can dereference an invalid
+     * path in native code. Direct Android document picks only contain the one
+     * selected file, so fail early and direct the user to an archive that
+     * contains the complete disc set.
+     */
+    private fun validateDiscSidecars(rom: File, systemId: String) {
+        val extension = rom.extension.lowercase()
+        when (extension) {
+            "gdi" -> {
+                val lines = rom.readLines()
+                val trackCount = lines.firstOrNull()?.trim()?.toIntOrNull()
+                require(trackCount != null && trackCount > 0) { "This Dreamcast GDI is missing its track list." }
+                require(lines.size >= trackCount + 1) { "This Dreamcast GDI is missing track entries." }
+                lines.drop(1).take(trackCount).forEach { line ->
+                    val quoted = Regex("\\\"([^\\\"]+)\\\"").find(line)?.groupValues?.getOrNull(1)
+                    val referenced = quoted ?: line.trim().split(Regex("\\s+")).getOrNull(4)
+                    require(!referenced.isNullOrBlank()) { "This Dreamcast GDI has an invalid track entry." }
+                    requireSidecar(rom, referenced, "Dreamcast GDI")
+                }
+            }
+            "cue" -> {
+                val files = rom.readLines().filter { it.trimStart().startsWith("FILE ", ignoreCase = true) }
+                require(files.isNotEmpty()) { "This ${systemId.uppercase()} CUE has no track files." }
+                files.forEach { line ->
+                    val rest = line.trim().substringAfter(' ', "").trim()
+                    val referenced = when {
+                        rest.startsWith("\"") -> rest.substringAfter('"').substringBefore('"')
+                        rest.startsWith("'") -> rest.substring(1).substringBefore("'")
+                        else -> rest.split(Regex("\\s+")).firstOrNull().orEmpty()
+                    }
+                    requireSidecar(rom, referenced, "${systemId.uppercase()} CUE")
+                }
+            }
+            "m3u" -> {
+                val entries = rom.readLines().map { it.trim() }.filter { it.isNotBlank() && !it.startsWith("#") }
+                require(entries.isNotEmpty()) { "This ${systemId.uppercase()} playlist is empty." }
+                entries.forEach { requireSidecar(rom, it, "${systemId.uppercase()} playlist") }
+            }
+        }
+    }
+
+    private fun requireSidecar(descriptor: File, reference: String, format: String) {
+        val clean = reference.replace('\\', '/')
+            .split('/')
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+            .joinToString(File.separator)
+        val sidecar = File(descriptor.parentFile, clean)
+        require(sidecar.isFile && sidecar.length() > 0L) {
+            "$format is missing track file ${reference.substringAfterLast('/')} — select a ZIP/7z containing the complete disc set."
+        }
+    }
+
+    private fun validateGameCubeDisc(rom: File) {
+        if (rom.extension.lowercase() !in setOf("iso", "gcm")) return
+        require(rom.length() >= 0x20) { "The selected GameCube image is too small to be a disc." }
         FileInputStream(rom).use { input ->
-            val header = ByteArray(4)
-            require(input.read(header) == header.size) { "The selected file is too small to be an N64 ROM." }
-            val validHeader = header.contentEquals(byteArrayOf(0x80.toByte(), 0x37, 0x12, 0x40)) ||
-                header.contentEquals(byteArrayOf(0x37, 0x80.toByte(), 0x40, 0x12)) ||
-                header.contentEquals(byteArrayOf(0x40, 0x12, 0x37, 0x80.toByte()))
-            require(validHeader) { "The selected file does not have a valid N64 ROM header." }
+            val header = ByteArray(0x20)
+            require(input.read(header) == header.size) { "The selected GameCube image is truncated." }
+            val gameCubeMagic = header.copyOfRange(0x1c, 0x20)
+            val wiiMagic = header.copyOfRange(0x18, 0x1c)
+            val valid = gameCubeMagic.contentEquals(byteArrayOf(0xC2.toByte(), 0x33, 0x9F.toByte(), 0x3D)) ||
+                wiiMagic.contentEquals(byteArrayOf(0x5D, 0x1C, 0x9E.toByte(), 0xA3.toByte()))
+            require(valid) { "The selected file is not a valid GameCube/Wii disc image." }
         }
     }
 
@@ -324,7 +395,7 @@ class MainActivity : AppCompatActivity() {
         ZipInputStream(BufferedInputStream(FileInputStream(source))).use { archive ->
             while (true) {
                 val entry = archive.nextEntry ?: break
-                if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
+                if (!entry.isDirectory && shouldExtractArchiveEntry(entry.name, systemId)) {
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
                     }
@@ -346,7 +417,7 @@ class MainActivity : AppCompatActivity() {
         SevenZFile(source).use { archive ->
             while (true) {
                 val entry = archive.nextEntry ?: break
-                if (!entry.isDirectory && isSupportedEntry(entry.name, systemId)) {
+                if (!entry.isDirectory && shouldExtractArchiveEntry(entry.name, systemId)) {
                     require(entry.size <= maxBytes) { "The selected ROM is too large." }
                     val output = File(extractionRoot, safeRelativeEntryName(entry.name)).apply {
                         parentFile?.mkdirs()
@@ -410,6 +481,15 @@ class MainActivity : AppCompatActivity() {
     private fun isSupportedEntry(name: String, systemId: String): Boolean {
         val extension = name.substringAfterLast('.', "").lowercase()
         return extension in (Systems.byId(systemId)?.extensions ?: emptySet()) && extension !in setOf("zip", "7z")
+    }
+
+    private fun shouldExtractArchiveEntry(name: String, systemId: String): Boolean {
+        if (isSupportedEntry(name, systemId)) return true
+        if (systemId != "dreamcast") return false
+        // GDI/CUE descriptors often reference raw or WAV tracks that are not
+        // themselves launchable entries. Keep them beside the descriptor so
+        // Flycast can resolve the relative paths after extraction.
+        return name.substringAfterLast('.', "").lowercase() in setOf("raw", "track", "wav", "sub", "img", "toc")
     }
 
     /** Keeps disc-image sidecar files next to their descriptor (e.g. GDI + tracks). */

@@ -7,14 +7,17 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cxxabi.h>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <exception>
 #include <fstream>
+#include <cstdlib>
 #include <mutex>
 #include <string>
+#include <typeinfo>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +66,7 @@ struct Session {
     std::string savePath;
     std::string systemDirectory;
     std::string saveDirectory;
+    std::string corePath;
     std::string lastError;
     std::unordered_map<std::string, std::string> variables;
     bool hardwareRendering{};
@@ -71,6 +75,29 @@ struct Session {
     bool initialized{};
     bool gameLoaded{};
 } g;
+
+bool is_core(const char* name) {
+    return g.corePath.find(name) != std::string::npos;
+}
+
+std::string current_exception_name() {
+    // Some native cores throw a non-std exception object.  The old frontend
+    // reduced those failures to the unhelpful string "unknown native
+    // exception", which made it impossible to tell whether a ROM, BIOS, or
+    // renderer setup step was at fault.  Only call this helper while handling
+    // an active exception.
+    std::string name = "unknown native exception";
+#if defined(__ANDROID__) || defined(__linux__)
+    const std::type_info* type = abi::__cxa_current_exception_type();
+    if (type && type->name()) {
+        int status = 0;
+        char* demangled = abi::__cxa_demangle(type->name(), nullptr, nullptr, &status);
+        name += " (" + std::string(status == 0 && demangled ? demangled : type->name()) + ")";
+        std::free(demangled);
+    }
+#endif
+    return name;
+}
 
 void core_failure(const char* operation, const char* detail) {
     g.lastError = std::string(operation) + " failed";
@@ -88,7 +115,8 @@ bool call_core_bool(const char* operation, Function&& function) {
     } catch (const std::exception& error) {
         core_failure(operation, error.what());
     } catch (...) {
-        core_failure(operation, "unknown native exception");
+        const std::string detail = current_exception_name();
+        core_failure(operation, detail.c_str());
     }
     return false;
 }
@@ -101,7 +129,8 @@ bool call_core_void(const char* operation, Function&& function) {
     } catch (const std::exception& error) {
         core_failure(operation, error.what());
     } catch (...) {
-        core_failure(operation, "unknown native exception");
+        const std::string detail = current_exception_name();
+        core_failure(operation, detail.c_str());
     }
     return false;
 }
@@ -183,6 +212,13 @@ bool environment(unsigned command, void* data) {
             // need a real native context negotiation interface. A few Android
             // builds (notably PPSSPP) label their GLES path as OPENGL, so keep
             // those legacy requests as compatibility aliases for GLES3.
+            if ((is_core("dolphin") || is_core("flycast")) &&
+                (callback->context_type == RETRO_HW_CONTEXT_OPENGL ||
+                 callback->context_type == RETRO_HW_CONTEXT_OPENGL_CORE)) {
+                g.lastError = "This Android build requested desktop OpenGL for a GLES-only core";
+                __android_log_print(ANDROID_LOG_ERROR, "EmuAllNative", "%s", g.lastError.c_str());
+                return false;
+            }
             if (callback->context_type != RETRO_HW_CONTEXT_OPENGL &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
@@ -201,7 +237,9 @@ bool environment(unsigned command, void* data) {
             // resources and can crash on the first ROM frame.
             callback->get_current_framebuffer = hardware_framebuffer;
             callback->get_proc_address = hardware_proc_address;
-            callback->cache_context = true;
+            // Preserve the core's requested context lifetime semantics.  In
+            // particular, Flycast's glsm layer asks for a non-cached context
+            // and handles its own resource rebuild on context_reset().
             g.hardwareCallback = *callback;
             g.hardwareContextConfigured = true;
             return true;
@@ -299,10 +337,20 @@ bool environment(unsigned command, void* data) {
                 // enabled. This also prevents a context-ownership crash on
                 // Android devices.
                 const std::string key = item->key;
+                std::string value = choices.substr(0, choices.find('|'));
                 if (key.find("_threaded_rendering") != std::string::npos)
-                    g.variables[key] = "disabled";
-                else
-                    g.variables[key] = choices.substr(0, choices.find('|'));
+                    value = "disabled";
+                // Dolphin's default fastmem arena reserves 12 GiB of virtual
+                // address space.  That is a good desktop default but is not
+                // reliable on Android and can terminate the process before a
+                // GameCube frame is produced.  Keep the safer single-threaded
+                // path until a device-specific tuning screen exists.
+                if (is_core("dolphin")) {
+                    if (key == "dolphin_fastmem_arena" || key == "dolphin_fastmem" ||
+                        key == "dolphin_main_cpu_thread" || key == "dolphin_main_load_game_into_memory")
+                        value = "disabled";
+                }
+                g.variables[key] = value;
                 ++item;
             }
             return true;
@@ -497,6 +545,7 @@ bool quick_load(const std::string& path) {
 }
 
 void stop_session() {
+    const std::string failure = g.lastError;
     if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy)
         call_core_void("hardware context destroy", [&] { g.hardwareCallback.context_destroy(); });
     if (g.gameLoaded) {
@@ -510,8 +559,12 @@ void stop_session() {
     }
     if (g.api.handle) dlclose(g.api.handle);
     g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear(); g.variables.clear();
+    g.corePath.clear();
     g.width = 0; g.height = 0; g.videoAspectRatio = 0.0; g.hardwareFramebuffer = 0; g.hardwareRendering = false;
     g.hardwareContextConfigured = false; g.hardwareCallback = {};
+    // Cleanup can itself call into a partially initialized core.  Do not let
+    // a secondary teardown error hide the startup/run failure the user needs.
+    if (!failure.empty()) g.lastError = failure;
 }
 
 std::string from_java(JNIEnv* env, jstring value) {
@@ -543,6 +596,11 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     size_t slash = g.savePath.find_last_of('/');
     g.saveDirectory = slash == std::string::npos ? g.systemDirectory : g.savePath.substr(0, slash);
     std::string core = from_java(env, corePath), romPathValue = from_java(env, romPath);
+    g.corePath = core;
+    // Play!'s Android adapter reads EXTERNAL_STORAGE during retro_init().
+    // Modern app processes are not guaranteed to define it, and passing a
+    // null value into its path setup throws before the ROM is inspected.
+    if (!g.systemDirectory.empty()) setenv("EXTERNAL_STORAGE", g.systemDirectory.c_str(), 1);
     __android_log_print(ANDROID_LOG_INFO, "EmuAllNative", "Starting core=%s rom=%s hardware=%d system=%s",
         core.c_str(), romPathValue.c_str(), g.hardwareRendering ? 1 : 0, g.systemDirectory.c_str());
     if (!load_api(core.c_str())) {
@@ -590,7 +648,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     game.data = useFilesystemPath ? nullptr : g.rom.data();
     game.size = useFilesystemPath ? 0 : g.rom.size();
     if (!call_core_bool("retro_load_game", [&] { return g.api.loadGame(&game); })) {
-        if (g.lastError.empty() || g.lastError.rfind("retro_load_game failed", 0) != 0)
+        if (g.lastError.empty())
             g.lastError = "The selected core rejected this file";
         stop_session();
         return false;
@@ -618,8 +676,11 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         : (av.geometry.base_height ? static_cast<double>(av.geometry.base_width) / av.geometry.base_height : 0.0);
     std::vector<uint8_t> save;
     if (read_file(g.savePath, save)) {
-        size_t size = g.api.memorySize(RETRO_MEMORY_SAVE_RAM); void* memory = g.api.memoryData(RETRO_MEMORY_SAVE_RAM);
-        if (size && memory) std::memcpy(memory, save.data(), std::min(size, save.size()));
+        call_core_void("restore battery save", [&] {
+            size_t size = g.api.memorySize(RETRO_MEMORY_SAVE_RAM);
+            void* memory = g.api.memoryData(RETRO_MEMORY_SAVE_RAM);
+            if (size && memory) std::memcpy(memory, save.data(), std::min(size, save.size()));
+        });
     }
     return true;
 }

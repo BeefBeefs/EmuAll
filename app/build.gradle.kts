@@ -21,8 +21,8 @@ android {
         applicationId = "com.beefbeefs.emuall"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.8.8"
+        versionCode = 19
+        versionName = "0.8.9"
 
         externalNativeBuild {
             cmake {

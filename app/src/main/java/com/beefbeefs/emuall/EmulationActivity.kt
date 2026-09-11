@@ -1,9 +1,11 @@
 package com.beefbeefs.emuall
 
 import android.content.res.Configuration
+import android.content.res.ColorStateList
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.Menu
@@ -591,7 +593,94 @@ class EmulationActivity : AppCompatActivity() {
         findViewById<Button>(R.id.cDownButton).contentDescription = "C down"
         findViewById<Button>(R.id.cLeftButton).contentDescription = "C left"
         findViewById<Button>(R.id.cRightButton).contentDescription = "C right"
+        applySystemControlColors()
         bindControls()
+    }
+
+    /** Match each console's recognizable physical controller colors. */
+    private fun applySystemControlColors() {
+        val a = findViewById<Button>(R.id.aButton)
+        val b = findViewById<Button>(R.id.bButton)
+        val x = findViewById<Button>(R.id.xButton)
+        val y = findViewById<Button>(R.id.yButton)
+        val z = findViewById<Button>(R.id.zButton)
+        val start = findViewById<Button>(R.id.startButton)
+
+        when (systemId) {
+            "gbc" -> {
+                tintControl(b, "#7B1F4D")
+                tintControl(a, "#A02B63")
+            }
+            "gba" -> {
+                tintControl(b, "#66204B")
+                tintControl(a, "#8D2A63")
+            }
+            "nes" -> {
+                tintControl(b, "#9F2430")
+                tintControl(a, "#C7353F")
+            }
+            "snes" -> {
+                // North American SNES: dark-purple A/B and lavender X/Y.
+                tintControl(b, "#553985")
+                tintControl(a, "#553985")
+                tintControl(y, "#8A78BA")
+                tintControl(x, "#8A78BA")
+            }
+            "genesis" -> {
+                // The original three-button pad used matching charcoal keys.
+                tintControl(a, "#34383D")
+                tintControl(b, "#34383D")
+                tintControl(y, "#34383D") // Visible C button in this profile.
+            }
+            "n64" -> {
+                tintControl(a, "#2E63C7")
+                tintControl(b, "#23924B")
+                listOf(R.id.cUpButton, R.id.cDownButton, R.id.cLeftButton, R.id.cRightButton)
+                    .forEach { tintControl(findViewById(it), "#E1B62B", "#17150B") }
+                tintControl(start, "#C4473F")
+                tintControl(z, "#6B7078")
+            }
+            "dreamcast" -> {
+                tintControl(a, "#2F9B62")
+                tintControl(b, "#CC3E45")
+                tintControl(x, "#3978C7")
+                tintControl(y, "#D7B52A", "#17150B")
+            }
+            "gamecube" -> {
+                tintControl(a, "#2F9B62")
+                tintControl(b, "#C9474D")
+                tintControl(x, "#B8BEC2", "#172019")
+                tintControl(y, "#B8BEC2", "#172019")
+                tintControl(z, "#6B4A91")
+                tintControl(start, "#70757B")
+            }
+            // PlayStation-family controls keep the colored symbol treatment
+            // defined in activity_emulation.xml.
+        }
+    }
+
+    private fun tintControl(button: Button, fillHex: String, textHex: String = "#FFFFFF") {
+        val fill = Color.parseColor(fillHex)
+        val pressed = blendColor(fill, Color.WHITE, 0.22f)
+        val disabled = blendColor(fill, Color.BLACK, 0.45f)
+        button.backgroundTintList = ColorStateList(
+            arrayOf(
+                intArrayOf(-android.R.attr.state_enabled),
+                intArrayOf(android.R.attr.state_pressed),
+                intArrayOf(),
+            ),
+            intArrayOf(disabled, pressed, fill),
+        )
+        button.setTextColor(Color.parseColor(textHex))
+    }
+
+    private fun blendColor(from: Int, to: Int, amount: Float): Int {
+        fun channel(start: Int, end: Int) = (start + (end - start) * amount).toInt().coerceIn(0, 255)
+        return Color.rgb(
+            channel(Color.red(from), Color.red(to)),
+            channel(Color.green(from), Color.green(to)),
+            channel(Color.blue(from), Color.blue(to)),
+        )
     }
 
     private fun bindControls() {

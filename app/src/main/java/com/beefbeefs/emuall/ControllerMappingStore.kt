@@ -41,7 +41,8 @@ class ControllerMappingStore(context: Context) {
         private const val PREFERENCES = "controller_mappings"
         private val SUPPORTED_BUTTON_IDS = setOf(
             BUTTON_B, BUTTON_SELECT, BUTTON_START, BUTTON_UP, BUTTON_DOWN,
-            BUTTON_LEFT, BUTTON_RIGHT, BUTTON_A, BUTTON_L, BUTTON_R,
+            BUTTON_LEFT, BUTTON_RIGHT, BUTTON_A, BUTTON_Y, BUTTON_X,
+            BUTTON_L, BUTTON_R, BUTTON_L2, BUTTON_R2, BUTTON_L3, BUTTON_R3,
         )
 
         val logicalButtons = listOf(
@@ -51,8 +52,14 @@ class ControllerMappingStore(context: Context) {
             BUTTON_RIGHT to "Right",
             BUTTON_A to "A",
             BUTTON_B to "B",
+            BUTTON_X to "X",
+            BUTTON_Y to "Y",
             BUTTON_L to "L",
             BUTTON_R to "R",
+            BUTTON_L2 to "L2 / Z",
+            BUTTON_R2 to "R2",
+            BUTTON_L3 to "L3",
+            BUTTON_R3 to "R3",
             BUTTON_SELECT to "Select",
             BUTTON_START to "Start",
         )
@@ -65,8 +72,14 @@ class ControllerMappingStore(context: Context) {
         const val BUTTON_LEFT = 6
         const val BUTTON_RIGHT = 7
         const val BUTTON_A = 8
+        const val BUTTON_X = 9
         const val BUTTON_L = 10
         const val BUTTON_R = 11
+        const val BUTTON_L2 = 12
+        const val BUTTON_R2 = 13
+        const val BUTTON_L3 = 14
+        const val BUTTON_R3 = 15
+        const val BUTTON_Y = 1
 
         fun defaultMapping(): Map<Int, Int> = mapOf(
             KeyEvent.KEYCODE_DPAD_UP to BUTTON_UP,
@@ -75,8 +88,14 @@ class ControllerMappingStore(context: Context) {
             KeyEvent.KEYCODE_DPAD_RIGHT to BUTTON_RIGHT,
             KeyEvent.KEYCODE_BUTTON_A to BUTTON_A,
             KeyEvent.KEYCODE_BUTTON_B to BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_X to BUTTON_X,
+            KeyEvent.KEYCODE_BUTTON_Y to BUTTON_Y,
             KeyEvent.KEYCODE_BUTTON_L1 to BUTTON_L,
             KeyEvent.KEYCODE_BUTTON_R1 to BUTTON_R,
+            KeyEvent.KEYCODE_BUTTON_L2 to BUTTON_L2,
+            KeyEvent.KEYCODE_BUTTON_R2 to BUTTON_R2,
+            KeyEvent.KEYCODE_BUTTON_THUMBL to BUTTON_L3,
+            KeyEvent.KEYCODE_BUTTON_THUMBR to BUTTON_R3,
             KeyEvent.KEYCODE_BUTTON_SELECT to BUTTON_SELECT,
             KeyEvent.KEYCODE_BUTTON_START to BUTTON_START,
         )

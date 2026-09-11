@@ -34,4 +34,7 @@
     <style name="EmuButton.Center" parent="EmuButton">
         <item name="android:layout_width">74dp</item><item name="android:layout_height">38dp</item><item name="android:textSize">11sp</item>
     </style>
+    <style name="EmuButton.CPad" parent="EmuButton">
+        <item name="android:layout_width">34dp</item><item name="android:layout_height">34dp</item><item name="android:textSize">7sp</item><item name="android:padding">0dp</item>
+    </style>
 </resources>

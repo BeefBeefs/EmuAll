@@ -56,6 +56,12 @@ struct Session {
     std::mutex frameMutex;
     std::mutex audioMutex;
     std::atomic<uint32_t> inputMask{0};
+    // Libretro exposes analogue sticks as a separate device from the
+    // standard RetroPad buttons. Keep both sticks in the session so a
+    // hardware core (N64, PSP, Dreamcast, GameCube or PS2) can receive the
+    // same normalized values that the virtual controls produce.
+    std::atomic<int16_t> analogX[2]{{0}, {0}};
+    std::atomic<int16_t> analogY[2]{{0}, {0}};
     unsigned width{};
     unsigned height{};
     double videoAspectRatio{};
@@ -436,8 +442,15 @@ size_t audio_batch(const int16_t* data, size_t frames) {
 }
 
 void input_poll() {}
-int16_t input_state(unsigned port, unsigned device, unsigned, unsigned id) {
-    if (port || device != RETRO_DEVICE_JOYPAD) return 0;
+int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
+    if (port) return 0;
+    if (device == RETRO_DEVICE_ANALOG) {
+        if (index > RETRO_DEVICE_INDEX_ANALOG_RIGHT) return 0;
+        if (id == RETRO_DEVICE_ID_ANALOG_X) return g.analogX[index].load(std::memory_order_relaxed);
+        if (id == RETRO_DEVICE_ID_ANALOG_Y) return g.analogY[index].load(std::memory_order_relaxed);
+        return 0;
+    }
+    if (device != RETRO_DEVICE_JOYPAD) return 0;
     uint32_t mask = g.inputMask.load(std::memory_order_relaxed);
     if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return static_cast<int16_t>(mask);
     return id < 32 && (mask & (1u << id)) ? 1 : 0;
@@ -560,6 +573,9 @@ void stop_session() {
     if (g.api.handle) dlclose(g.api.handle);
     g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear(); g.variables.clear();
     g.corePath.clear();
+    g.inputMask = 0;
+    g.analogX[0] = 0; g.analogX[1] = 0;
+    g.analogY[0] = 0; g.analogY[1] = 0;
     g.width = 0; g.height = 0; g.videoAspectRatio = 0.0; g.hardwareFramebuffer = 0; g.hardwareRendering = false;
     g.hardwareContextConfigured = false; g.hardwareCallback = {};
     // Cleanup can itself call into a partially initialized core.  Do not let
@@ -739,6 +755,14 @@ extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_dra
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_sampleRate(JNIEnv*, jobject) { return static_cast<jint>(g.sampleRate + .5); }
 extern "C" JNIEXPORT jdouble JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_framesPerSecond(JNIEnv*, jobject) { return g.fps; }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setInputMask(JNIEnv*, jobject, jint mask) { g.inputMask = static_cast<uint32_t>(mask); }
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setAnalog(JNIEnv*, jobject, jint stick, jint x, jint y) {
+    if (stick < 0 || stick > 1) return;
+    const auto clamp = [](jint value) {
+        return static_cast<int16_t>(std::max(-32767, std::min(32767, static_cast<int>(value))));
+    };
+    g.analogX[stick] = clamp(x);
+    g.analogY[stick] = clamp(y);
+}
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_reset(JNIEnv*, jobject) {
     if (g.gameLoaded) call_core_void("retro_reset", [&] { g.api.reset(); });
 }

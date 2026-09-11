@@ -25,6 +25,7 @@ object NativeCoreBridge {
     external fun sampleRate(): Int
     external fun framesPerSecond(): Double
     external fun setInputMask(mask: Int)
+    external fun setAnalog(stick: Int, x: Int, y: Int)
     external fun reset()
     external fun quickSave(path: String): Boolean
     external fun quickLoad(path: String): Boolean

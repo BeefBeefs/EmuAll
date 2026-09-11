@@ -390,8 +390,20 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         inputMask = if (down) inputMask or (1 shl id) else inputMask and (1 shl id).inv()
         NativeCoreBridge.setInputMask(inputMask)
     }
+    /** Sends a normalized virtual-stick value to libretro in its [-32767,32767] range. */
+    fun setAnalog(stick: Int, x: Float, y: Float) {
+        if (stick !in 0..1) return
+        val scale = 32767f
+        NativeCoreBridge.setAnalog(stick, (x.coerceIn(-1f, 1f) * scale).toInt(), (y.coerceIn(-1f, 1f) * scale).toInt())
+    }
     fun stop() {
         running.set(false)
+        NativeCoreBridge.setAnalog(0, 0, 0)
+        NativeCoreBridge.setAnalog(1, 0, 0)
+        synchronized(this) {
+            inputMask = 0
+            NativeCoreBridge.setInputMask(0)
+        }
         if (hardwareRendering) {
             val stopped = CountDownLatch(1)
             queueEvent {

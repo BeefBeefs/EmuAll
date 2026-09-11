@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -16,6 +17,7 @@ import java.io.File
 class EmulationActivity : AppCompatActivity() {
     private lateinit var surface: GameSurfaceView
     private lateinit var surfaceHost: FrameLayout
+    private lateinit var systemId: String
     private var controllerMapping: Map<Int, Int> = ControllerMappingStore.defaultMapping()
     // Rotation can destroy/recreate a window while Android reports the old
     // Activity as finishing. Only an explicit user exit is allowed to stop
@@ -31,6 +33,8 @@ class EmulationActivity : AppCompatActivity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         surface = findViewById(R.id.gameSurface)
         surfaceHost = findViewById(R.id.surfaceHost)
+        systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
+        configureControlProfile()
         applySessionLayout(resources.configuration.orientation)
         val rom = intent.getStringExtra(EXTRA_ROM)
         if (rom.isNullOrBlank()) {
@@ -44,7 +48,6 @@ class EmulationActivity : AppCompatActivity() {
         }
         val coreLibrary = intent.getStringExtra(EXTRA_CORE_LIBRARY) ?: "libmgba_libretro.so"
         val coreName = intent.getStringExtra(EXTRA_CORE_NAME) ?: "libretro core"
-        val systemId = intent.getStringExtra(EXTRA_SYSTEM_ID) ?: Systems.all.first().id
         val core = CoreRegistry.forSystem(systemId)
         val videoBackend = core?.let { GraphicsBackendSelector.select(this, it) } ?: VideoBackend.OPENGL_ES
         controllerMapping = ControllerMappingStore(this).mappingFor(systemId)
@@ -57,7 +60,6 @@ class EmulationActivity : AppCompatActivity() {
             showLaunchError("Could not load $coreName: ${corePath.name} is not packaged for this device")
             return
         }
-        bindControls()
         val systemDirectory = intent.getStringExtra(EXTRA_SYSTEM_DIRECTORY) ?: filesDir.absolutePath
         surface.start(corePath.absolutePath, rom, save, systemDirectory, coreName, videoBackend, core?.requiresHardwareRendering == true) { status ->
             runOnUiThread { findViewById<TextView>(R.id.sessionStatus).text = status }
@@ -105,8 +107,26 @@ class EmulationActivity : AppCompatActivity() {
     private fun applySessionLayout(orientation: Int) {
         val controls = findViewById<FrameLayout>(R.id.gameControls)
         val directionalPad = findViewById<View>(R.id.directionalPad)
+        val leftStick = findViewById<View>(R.id.leftAnalogStick)
+        val rightStick = findViewById<View>(R.id.rightAnalogStick)
         val actionButtons = findViewById<View>(R.id.actionButtons)
+        val cButtonPad = findViewById<View>(R.id.cButtonPad)
         val centerButtons = findViewById<View>(R.id.centerButtons)
+        val hasLeftStick = leftStick.visibility == View.VISIBLE
+        val hasRightStick = rightStick.visibility == View.VISIBLE
+        val hasCPad = cButtonPad.visibility == View.VISIBLE
+        val largeProfile = systemId in setOf("n64", "psp", "dreamcast", "gamecube", "ps2")
+        val compactLandscapeCPad = orientation == Configuration.ORIENTATION_LANDSCAPE && hasCPad
+        val dpadCell = when {
+            compactLandscapeCPad -> 34
+            largeProfile -> 44
+            else -> 52
+        }
+        val cPadSize = if (compactLandscapeCPad) 84 else 102
+        resizeDirectionalPad(dpadCell)
+        if (hasCPad) resizeCPad(cPadSize / 3)
+        controls.clipChildren = false
+        controls.clipToPadding = false
 
         // Keep both the GLSurfaceView host and the control overlay attached to
         // the same permanent FrameLayout. Reparenting a SurfaceView while the
@@ -124,13 +144,37 @@ class EmulationActivity : AppCompatActivity() {
                 leftMargin = dp(176)
                 rightMargin = dp(184)
             }
-            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(156), dp(156)).apply {
-                gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(dpadCell * 3), dp(dpadCell * 3)).apply {
+                gravity = if (hasLeftStick) android.view.Gravity.START or android.view.Gravity.TOP else android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
                 leftMargin = dp(10)
+                topMargin = dp(6)
             }
-            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(178), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                gravity = android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
+            if (hasLeftStick) {
+                val stickSize = if (compactLandscapeCPad) 88 else 104
+                leftStick.layoutParams = FrameLayout.LayoutParams(dp(stickSize), dp(stickSize)).apply {
+                    gravity = android.view.Gravity.START or android.view.Gravity.BOTTOM
+                    leftMargin = dp(24)
+                    bottomMargin = dp(6)
+                }
+            }
+            if (hasRightStick) {
+                rightStick.layoutParams = FrameLayout.LayoutParams(dp(100), dp(100)).apply {
+                    gravity = android.view.Gravity.END or android.view.Gravity.TOP
+                    rightMargin = dp(192)
+                    topMargin = dp(6)
+                }
+            }
+            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(180), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = if (hasRightStick) android.view.Gravity.END or android.view.Gravity.BOTTOM else android.view.Gravity.END or android.view.Gravity.CENTER_VERTICAL
                 rightMargin = dp(4)
+                bottomMargin = if (hasRightStick) dp(4) else 0
+            }
+            if (hasCPad) {
+                cButtonPad.layoutParams = FrameLayout.LayoutParams(dp(cPadSize), dp(cPadSize)).apply {
+                    gravity = android.view.Gravity.START or android.view.Gravity.BOTTOM
+                    leftMargin = dp(if (compactLandscapeCPad) 46 else 30)
+                    bottomMargin = dp(4)
+                }
             }
             centerButtons.layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -141,28 +185,79 @@ class EmulationActivity : AppCompatActivity() {
                 bottomMargin = dp(14)
             }
         } else {
+            val portraitControlHeight = when {
+                hasCPad -> 310
+                hasLeftStick || hasRightStick -> 300
+                largeProfile -> 290
+                else -> 245
+            }
             surfaceHost.layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             ).apply {
-                bottomMargin = dp(240)
+                bottomMargin = dp(portraitControlHeight)
             }
-            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(156), dp(156)).apply {
+            directionalPad.layoutParams = FrameLayout.LayoutParams(dp(dpadCell * 3), dp(dpadCell * 3)).apply {
                 gravity = android.view.Gravity.START or android.view.Gravity.BOTTOM
                 leftMargin = dp(12)
-                bottomMargin = dp(42)
+                bottomMargin = dp(if (hasLeftStick) 154 else 42)
             }
-            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(170), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            if (hasLeftStick) {
+                leftStick.layoutParams = FrameLayout.LayoutParams(dp(112), dp(112)).apply {
+                    gravity = android.view.Gravity.START or android.view.Gravity.BOTTOM
+                    leftMargin = dp(18)
+                    bottomMargin = dp(8)
+                }
+            }
+            if (hasRightStick) {
+                rightStick.layoutParams = FrameLayout.LayoutParams(dp(108), dp(108)).apply {
+                    gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
+                    rightMargin = dp(190)
+                    bottomMargin = dp(8)
+                }
+            }
+            actionButtons.layoutParams = FrameLayout.LayoutParams(dp(180), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = android.view.Gravity.END or android.view.Gravity.BOTTOM
-                rightMargin = dp(12)
-                bottomMargin = dp(36)
+                rightMargin = dp(6)
+                bottomMargin = dp(12)
+            }
+            if (hasCPad) {
+                cButtonPad.layoutParams = FrameLayout.LayoutParams(dp(cPadSize), dp(cPadSize)).apply {
+                    gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
+                    bottomMargin = dp(6)
+                }
             }
             centerButtons.layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
-                bottomMargin = dp(8)
+                bottomMargin = dp(if (hasCPad) 112 else 8)
+            }
+        }
+    }
+
+    /** Keep the d-pad compact on systems that also show a stick and extra buttons. */
+    private fun resizeDirectionalPad(cell: Int) {
+        val pad = findViewById<GridLayout>(R.id.directionalPad)
+        pad.layoutParams = (pad.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(cell * 3, cell * 3)).apply {
+            width = dp(cell * 3)
+            height = dp(cell * 3)
+        }
+        for (index in 0 until pad.childCount) {
+            pad.getChildAt(index).layoutParams = GridLayout.LayoutParams().apply {
+                width = dp(cell)
+                height = dp(cell)
+            }
+        }
+    }
+
+    private fun resizeCPad(cell: Int) {
+        val pad = findViewById<GridLayout>(R.id.cButtonPad)
+        for (index in 0 until pad.childCount) {
+            pad.getChildAt(index).layoutParams = GridLayout.LayoutParams().apply {
+                width = dp(cell)
+                height = dp(cell)
             }
         }
     }
@@ -178,9 +273,112 @@ class EmulationActivity : AppCompatActivity() {
             }
         }.show()
     }
+
+    /**
+     * Each core gets the controller shape it actually exposes through the
+     * libretro RetroPad/analogue interfaces. Unused controls are removed from
+     * the touch target entirely so they cannot cover the game surface.
+     */
+    private fun configureControlProfile() {
+        val isGba = systemId == "gba"
+        val isGbc = systemId == "gbc"
+        val isNes = systemId == "nes"
+        val isSnes = systemId == "snes"
+        val isGenesis = systemId == "genesis"
+        val isPs1 = systemId == "ps1"
+        val isPsp = systemId == "psp"
+        val isN64 = systemId == "n64"
+        val isDreamcast = systemId == "dreamcast"
+        val isGameCube = systemId == "gamecube"
+        val isPs2 = systemId == "ps2"
+
+        val showLeftStick = isPsp || isN64 || isDreamcast || isGameCube || isPs2
+        val showRightStick = isGameCube || isPs2
+        val showL1R1 = isGba || isSnes || isPs1 || isPsp || isGameCube || isPs2
+        val showFaceExtra = isSnes || isGenesis || isPs1 || isPsp || isDreamcast || isGameCube || isPs2
+        val showZ = isN64 || isGameCube
+        val showL2R2 = isDreamcast || isPs2
+        val showCPad = isN64
+        val showSelect = !isGenesis && !isN64 && !isDreamcast && !isGameCube && !isPs2
+
+        val leftStick = findViewById<AnalogStickView>(R.id.leftAnalogStick)
+        val rightStick = findViewById<AnalogStickView>(R.id.rightAnalogStick)
+        leftStick.visibility = if (showLeftStick) View.VISIBLE else View.GONE
+        rightStick.visibility = if (showRightStick) View.VISIBLE else View.GONE
+        leftStick.contentDescription = if (isN64) "N64 analog stick" else "Left analog stick"
+        rightStick.contentDescription = "Right analog stick"
+        leftStick.onValueChanged = { x, y -> surface.setAnalog(0, x, y) }
+        rightStick.onValueChanged = { x, y -> surface.setAnalog(1, x, y) }
+
+        findViewById<View>(R.id.lButton).visibility = if (showL1R1) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.rButton).visibility = if (showL1R1) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.shoulderRow).visibility = if (showL1R1) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.faceExtraRow).visibility = if (showFaceExtra) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.extraButtonGrid).visibility = if (showZ || showL2R2) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.cButtonPad).visibility = if (showCPad) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.selectButton).visibility = if (showSelect) View.VISIBLE else View.GONE
+
+        val a = findViewById<Button>(R.id.aButton)
+        val b = findViewById<Button>(R.id.bButton)
+        val x = findViewById<Button>(R.id.xButton)
+        val y = findViewById<Button>(R.id.yButton)
+        val l = findViewById<Button>(R.id.lButton)
+        val r = findViewById<Button>(R.id.rButton)
+        val z = findViewById<Button>(R.id.zButton)
+        val l2 = findViewById<Button>(R.id.l2Button)
+        val r2 = findViewById<Button>(R.id.r2Button)
+        when {
+            isPs1 || isPsp || isPs2 -> {
+                a.text = "Cross"; b.text = "Circle"; x.text = "Square"; y.text = "Triangle"
+            }
+            else -> {
+                a.text = "A"; b.text = "B"; x.text = "X"; y.text = if (isGenesis) "C" else "Y"
+            }
+        }
+        l.text = if (isPs1 || isPs2) "L1" else "L"
+        r.text = if (isPs1 || isPs2) "R1" else "R"
+        z.text = "Z"
+        l2.text = if (isDreamcast) "LT" else "L2"
+        r2.text = if (isDreamcast) "RT" else "R2"
+        x.visibility = if (showFaceExtra && !isGenesis) View.VISIBLE else View.GONE
+        y.visibility = if (showFaceExtra) View.VISIBLE else View.GONE
+        z.visibility = if (showZ) View.VISIBLE else View.GONE
+        l2.visibility = if (showL2R2) View.VISIBLE else View.GONE
+        r2.visibility = if (showL2R2) View.VISIBLE else View.GONE
+        findViewById<Button>(R.id.startButton).text = if (isGenesis) "Start" else "Start"
+        findViewById<Button>(R.id.selectButton).text = "Select"
+
+        // Physical N64 C-buttons are represented by the extended RetroPad
+        // buttons. This keeps them independent from the regular A/B face pair.
+        findViewById<Button>(R.id.cUpButton).contentDescription = "C up"
+        findViewById<Button>(R.id.cDownButton).contentDescription = "C down"
+        findViewById<Button>(R.id.cLeftButton).contentDescription = "C left"
+        findViewById<Button>(R.id.cRightButton).contentDescription = "C right"
+        bindControls()
+    }
+
     private fun bindControls() {
-        mapOf(R.id.upButton to 4, R.id.downButton to 5, R.id.leftButton to 6, R.id.rightButton to 7,
-            R.id.aButton to 8, R.id.bButton to 0, R.id.lButton to 10, R.id.rButton to 11, R.id.selectButton to 2, R.id.startButton to 3)
+        mapOf(
+            R.id.upButton to ControllerMappingStore.BUTTON_UP,
+            R.id.downButton to ControllerMappingStore.BUTTON_DOWN,
+            R.id.leftButton to ControllerMappingStore.BUTTON_LEFT,
+            R.id.rightButton to ControllerMappingStore.BUTTON_RIGHT,
+            R.id.aButton to ControllerMappingStore.BUTTON_A,
+            R.id.bButton to ControllerMappingStore.BUTTON_B,
+            R.id.xButton to ControllerMappingStore.BUTTON_X,
+            R.id.yButton to ControllerMappingStore.BUTTON_Y,
+            R.id.lButton to ControllerMappingStore.BUTTON_L,
+            R.id.rButton to ControllerMappingStore.BUTTON_R,
+            R.id.zButton to ControllerMappingStore.BUTTON_L2,
+            R.id.l2Button to ControllerMappingStore.BUTTON_L2,
+            R.id.r2Button to ControllerMappingStore.BUTTON_R2,
+            R.id.cUpButton to ControllerMappingStore.BUTTON_Y,
+            R.id.cLeftButton to ControllerMappingStore.BUTTON_X,
+            R.id.cRightButton to ControllerMappingStore.BUTTON_R2,
+            R.id.cDownButton to ControllerMappingStore.BUTTON_L3,
+            R.id.selectButton to ControllerMappingStore.BUTTON_SELECT,
+            R.id.startButton to ControllerMappingStore.BUTTON_START,
+        )
             .forEach { (viewId, buttonId) -> findViewById<Button>(viewId).setOnTouchListener { view, event ->
                 val button = view as Button
                 when (event.actionMasked) {

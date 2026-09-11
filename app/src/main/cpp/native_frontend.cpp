@@ -483,6 +483,26 @@ bool environment(unsigned command, void* data) {
                         value = "0";
                     if (key == "dolphin_fast_depth_calculation")
                         value = "disabled";
+                    // This frontend presents one completed libretro frame at
+                    // a time. Dolphin's default duplicate-frame suppression
+                    // and early XFB path may leave the shared frontend FBO in
+                    // an in-progress state even though the callback reports a
+                    // duplicate. Require a complete, normally-timed XFB for
+                    // each callback so both 2D and 3D remain coherent.
+                    if (key == "dolphin_skip_dupe_frames" ||
+                        key == "dolphin_early_xfb_output" ||
+                        key == "dolphin_immediate_xfb" ||
+                        key == "dolphin_rush_presentation" ||
+                        key == "dolphin_early_presentation")
+                        value = "disabled";
+                    // RAM-backed EFB/XFB copies are slower but avoid exposing
+                    // texture-only copies before games have finished reading
+                    // and composing them. This is the safe global profile for
+                    // a mobile frontend without shared GL contexts.
+                    if (key == "dolphin_efb_to_texture" ||
+                        key == "dolphin_xfb_to_texture_enable" ||
+                        key == "dolphin_defer_efb_copies")
+                        value = "disabled";
                     // The Android frontend owns one GLSurfaceView EGL context
                     // and cannot supply the additional shared contexts used by
                     // Dolphin's asynchronous shader workers. Compile on the

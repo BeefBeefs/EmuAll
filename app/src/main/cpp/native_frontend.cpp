@@ -14,6 +14,7 @@
 #include <deque>
 #include <exception>
 #include <fstream>
+#include <fcntl.h>
 #include <cstdlib>
 #include <mutex>
 #include <sstream>
@@ -21,6 +22,7 @@
 #include <typeinfo>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
 
 #include "cores/mgba/src/platform/libretro/libretro.h"
 
@@ -80,6 +82,8 @@ struct Session {
     std::string graphicsNegotiationError;
     std::mutex logMutex;
     std::deque<std::string> diagnostics;
+    std::string diagnosticsPath;
+    size_t diagnosticBytesWritten{};
     std::unordered_map<std::string, std::string> variables;
     unsigned glesMajor{3};
     unsigned glesMinor{0};
@@ -93,6 +97,28 @@ struct Session {
     bool gameLoaded{};
 } g;
 
+int diagnosticFd = -1;
+
+void open_diagnostic_file(const std::string& path) {
+    if (diagnosticFd >= 0) close(diagnosticFd);
+    diagnosticFd = -1;
+    g.diagnosticBytesWritten = 0;
+    g.diagnosticsPath = path;
+    if (path.empty()) return;
+    diagnosticFd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+}
+
+void persist_diagnostic_locked(const std::string& line) {
+    const int fd = diagnosticFd;
+    if (fd < 0 || g.diagnosticBytesWritten >= 256 * 1024) return;
+    std::string output = line;
+    output += '\n';
+    const size_t remaining = 256 * 1024 - g.diagnosticBytesWritten;
+    const size_t length = std::min(output.size(), remaining);
+    const ssize_t written = write(fd, output.data(), length);
+    if (written > 0) g.diagnosticBytesWritten += static_cast<size_t>(written);
+}
+
 void record_diagnostic(const std::string& message) {
     if (message.empty()) return;
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -101,6 +127,7 @@ void record_diagnostic(const std::string& message) {
     std::ostringstream line;
     line << '[' << elapsed << "] " << message;
     g.diagnostics.push_back(line.str());
+    persist_diagnostic_locked(line.str());
     while (g.diagnostics.size() > 240) g.diagnostics.pop_front();
 }
 
@@ -183,6 +210,7 @@ void core_log(enum retro_log_level level, const char* format, ...) {
         const char* label = level == RETRO_LOG_ERROR ? "ERROR" :
             level == RETRO_LOG_WARN ? "WARN" : level == RETRO_LOG_DEBUG ? "DEBUG" : "INFO";
         g.diagnostics.push_back(std::string("[core ") + label + "] " + clean);
+        persist_diagnostic_locked(std::string("[core ") + label + "] " + clean);
         while (g.diagnostics.size() > 240) g.diagnostics.pop_front();
         if (level == RETRO_LOG_ERROR)
             g.lastCoreError = clean;
@@ -726,6 +754,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     g.savePath = from_java(env, savePath); g.systemDirectory = from_java(env, systemDirectory);
     size_t slash = g.savePath.find_last_of('/');
     g.saveDirectory = slash == std::string::npos ? g.systemDirectory : g.savePath.substr(0, slash);
+    open_diagnostic_file(g.saveDirectory + "/last_core_diagnostics.txt");
     std::string core = from_java(env, corePath), romPathValue = from_java(env, romPath);
     g.corePath = core;
     // Play!'s Android adapter reads EXTERNAL_STORAGE during retro_init().

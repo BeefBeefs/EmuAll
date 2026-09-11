@@ -158,6 +158,42 @@
                 </LinearLayout>
 
                 <LinearLayout
+                    android:id="@+id/homeReportCard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_accent"
+                    android:orientation="vertical"
+                    android:padding="16dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="LAST EMULATION REPORT"
+                        android:textColor="@color/accent"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/homeReportSummary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:textColor="@color/text_muted"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/homeReportButton"
+                        style="@style/EmuButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/button_secondary"
+                        android:text="View / Copy Report" />
+                </LinearLayout>
+
+                <LinearLayout
                     android:id="@+id/homeRecentSection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -224,6 +260,16 @@
                     android:background="@drawable/button_secondary"
                     android:enabled="false"
                     android:text="Controller Mapping · No Controller" />
+
+                <Button
+                    android:id="@+id/systemReportButton"
+                    style="@style/EmuButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/button_secondary"
+                    android:text="View Last Emulation Report"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <LinearLayout

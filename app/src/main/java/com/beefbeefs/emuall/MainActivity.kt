@@ -3,12 +3,16 @@ package com.beefbeefs.emuall
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.StatFs
 import android.os.SystemClock
 import android.provider.OpenableColumns
@@ -38,6 +42,7 @@ import java.util.Date
 import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
+    private data class SelectedDocument(val uri: Uri, val name: String)
     private lateinit var recentStore: RecentGameStore
     private lateinit var homeSection: LinearLayout
     private lateinit var homeRecentSection: LinearLayout
@@ -84,6 +89,8 @@ class MainActivity : AppCompatActivity() {
             "${NativeCoreBridge.frontendVersion()} · OpenGL ES fallback ready"
         }.getOrElse { "Native frontend could not load: ${it.javaClass.simpleName}" }
         findViewById<Button>(R.id.preferencesButton).setOnClickListener { showPreferencesDialog() }
+        findViewById<Button>(R.id.homeReportButton).setOnClickListener { showLastEmulationReport() }
+        findViewById<Button>(R.id.systemReportButton).setOnClickListener { showLastEmulationReport() }
         setupSystemSelector()
         renderHome()
         inputManager.registerInputDeviceListener(inputDeviceListener, null)
@@ -131,8 +138,11 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.systemTitle).text = system.displayName
         val renderer = core?.let { GraphicsBackendSelector.describe(this, it) }
         val rendererNote = if (core != null && playableCore == null) "\nThis core needs a compatible hardware-rendering device." else ""
+        val looseDiscNote = if (system.id == "dreamcast") {
+            "\nLoose CUE/GDI: long-press and select the descriptor plus every track together."
+        } else ""
         val formats = if (system.extensions.isEmpty()) "No Android-compatible core is available yet."
-        else "Core: ${core?.displayName ?: system.coreName}\nRenderer: ${renderer ?: "Not bundled"}\nRecognized: ${system.extensions.joinToString { ".$it" }}$rendererNote"
+        else "Core: ${core?.displayName ?: system.coreName}\nRenderer: ${renderer ?: "Not bundled"}\nRecognized: ${system.extensions.joinToString { ".$it" }}$rendererNote$looseDiscNote"
         findViewById<TextView>(R.id.systemDetails).text = formats
         findViewById<Button>(R.id.chooseGameButton).apply {
             isEnabled = supports(system) && playableCore != null
@@ -145,6 +155,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { openGamePicker() }
         }
         refreshControllerButton()
+        refreshDiagnosticActions()
         renderRecents()
         renderStates()
     }
@@ -164,6 +175,78 @@ class MainActivity : AppCompatActivity() {
             "No controller detected · virtual controls available"
         }
         renderHomeRecents()
+        refreshDiagnosticActions()
+    }
+
+    private fun latestDiagnosticFile(): File? {
+        val root = File(filesDir, "saves")
+        return root.listFiles().orEmpty()
+            .map { File(it, "last_core_diagnostics.txt") }
+            .filter { it.isFile && it.length() > 0L }
+            .maxByOrNull { it.lastModified() }
+    }
+
+    private fun refreshDiagnosticActions() {
+        val report = latestDiagnosticFile()
+        findViewById<View>(R.id.homeReportCard).visibility = if (report == null) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.systemReportButton).visibility = if (report == null) View.GONE else View.VISIBLE
+        if (report != null) {
+            val reportSystem = Systems.byId(report.parentFile?.name.orEmpty())?.displayName
+                ?: report.parentFile?.name.orEmpty().uppercase()
+            findViewById<TextView>(R.id.homeReportSummary).text =
+                "$reportSystem · saved even if the emulator screen or app closed"
+        }
+    }
+
+    private fun showLastEmulationReport() {
+        val file = latestDiagnosticFile()
+        if (file == null) {
+            Toast.makeText(this, "No emulation report is available yet.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val nativeReport = runCatching { file.readText() }.getOrElse { "Could not read report: ${it.message}" }
+        val exitReport = recentCrashSummary(file.lastModified())
+        val report = if (exitReport == null) nativeReport else "$nativeReport\n\n$exitReport"
+        val text = TextView(this).apply {
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            setTextIsSelectable(true)
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            this.text = report
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(text) }
+        AlertDialog.Builder(this)
+            .setTitle("Last emulation report")
+            .setView(scroll)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Copy") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("EmuAll report", report))
+                Toast.makeText(this, "Report copied", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun recentCrashSummary(reportTime: Long): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val exits = (getSystemService(ACTIVITY_SERVICE) as ActivityManager)
+            .getHistoricalProcessExitReasons(packageName, 0, 5)
+        val exit = exits.firstOrNull {
+            it.reason in setOf(
+                android.app.ApplicationExitInfo.REASON_CRASH,
+                android.app.ApplicationExitInfo.REASON_CRASH_NATIVE,
+                android.app.ApplicationExitInfo.REASON_ANR,
+            ) && kotlin.math.abs(it.timestamp - reportTime) < 120_000L
+        } ?: return null
+        val reason = when (exit.reason) {
+            android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native crash"
+            android.app.ApplicationExitInfo.REASON_ANR -> "App not responding"
+            else -> "Java crash"
+        }
+        return buildString {
+            append("Android process exit: $reason (status ${exit.status})")
+            exit.description?.takeIf { it.isNotBlank() }?.let { append("\n$it") }
+        }
     }
 
     private fun renderHomeRecents() {
@@ -244,6 +327,7 @@ class MainActivity : AppCompatActivity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/octet-stream"
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/octet-stream", "application/zip", "application/x-7z-compressed", "*/*"))
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, selectedSystem.id in setOf("dreamcast", "ps1", "ps2"))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
         startActivityForResult(intent, PICK_GAME)
@@ -253,19 +337,32 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != PICK_GAME || resultCode != Activity.RESULT_OK) return
-        val uri = data?.data ?: return
         val system = selectedSystem
-        val name = displayName(uri)
-        val extension = name.substringAfterLast('.', "").lowercase()
-        if (extension !in system.extensions) {
-            Toast.makeText(this, "$name is not recognized as a ${system.shortName} game.", Toast.LENGTH_LONG).show()
+        val uris = buildList {
+            data?.clipData?.let { clips ->
+                for (index in 0 until clips.itemCount) add(clips.getItemAt(index).uri)
+            }
+            data?.data?.let(::add)
+        }.distinct()
+        val documents = uris.map { SelectedDocument(it, displayName(it)) }
+        val primary = documents
+            .filter { it.name.substringAfterLast('.', "").lowercase() in system.extensions }
+            .minByOrNull { archiveEntryPriority(it.name, system.id) }
+        if (primary == null) {
+            Toast.makeText(this, "The selection does not contain a recognized ${system.shortName} game.", Toast.LENGTH_LONG).show()
             return
         }
-        runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        recentStore.add(RecentGame(system.id, name, uri, System.currentTimeMillis()))
+        documents.forEach { document ->
+            runCatching { contentResolver.takePersistableUriPermission(document.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+        val companions = documents.filterNot { it.uri == primary.uri }
+        recentStore.add(RecentGame(system.id, primary.name, primary.uri, System.currentTimeMillis()))
         renderSystemPage()
-        if (CoreRegistry.playableForSystem(this, system.id) != null) launchGame(uri, name, system.id)
-        else Toast.makeText(this, "$name added. ${system.coreName} integration is not playable yet.", Toast.LENGTH_LONG).show()
+        if (CoreRegistry.playableForSystem(this, system.id) != null) {
+            launchGame(primary.uri, primary.name, system.id, companionDocuments = companions)
+        } else {
+            Toast.makeText(this, "${primary.name} added. ${system.coreName} integration is not playable yet.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun renderRecents() {
@@ -364,7 +461,14 @@ class MainActivity : AppCompatActivity() {
     private fun stateFile(local: LocalFiles, slot: Int) = File(if (slot == 1) "${local.save.absolutePath}.quick.state" else "${local.save.absolutePath}.state.$slot")
     private fun thumbnailFile(state: File) = File("${state.absolutePath}.png")
 
-    private fun launchGame(uri: Uri, name: String, systemId: String = selectedSystem.id, autoLoad: Boolean = false, autoLoadSlot: Int = 1) {
+    private fun launchGame(
+        uri: Uri,
+        name: String,
+        systemId: String = selectedSystem.id,
+        autoLoad: Boolean = false,
+        autoLoadSlot: Int = 1,
+        companionDocuments: List<SelectedDocument> = emptyList(),
+    ) {
         val core = CoreRegistry.playableForSystem(this, systemId)
         if (core == null) {
             val registered = CoreRegistry.forSystem(systemId)
@@ -391,13 +495,14 @@ class MainActivity : AppCompatActivity() {
                 local.save.parentFile?.mkdirs()
                 report("Checking file and storage", 0L, -1L)
                 val cached = recent?.cachedRomPath?.let(::File)?.takeIf {
-                    it.isFile && it.length() > 0L && isReusablePreparedFile(it, name, systemId)
+                    companionDocuments.isEmpty() && it.isFile && it.length() > 0L &&
+                        isReusablePreparedFile(it, name, systemId)
                 }
                 val rom = if (cached != null) {
                     report("Using prepared game copy", 1L, 1L)
                     cached
                 } else {
-                    prepareRom(uri, name, systemId, romDirectory, report)
+                    prepareRom(uri, name, systemId, romDirectory, report, companionDocuments)
                 }
                 postPreparation("Validating ${core.displayName}", -1L, -1L)
                 validatePreparedRom(rom, systemId)
@@ -423,12 +528,14 @@ class MainActivity : AppCompatActivity() {
                     } catch (error: Throwable) {
                         preparationInProgress = false
                         val message = preparationErrorMessage(error)
+                        persistFrontendFailure(systemId, name, message)
                         showPreparationFailure(name, message)
                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (error: Throwable) {
                 val message = preparationErrorMessage(error)
+                persistFrontendFailure(systemId, name, message)
                 runOnUiThread {
                     preparationInProgress = false
                     showPreparationFailure(name, message)
@@ -436,6 +543,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    private fun persistFrontendFailure(systemId: String, gameName: String, message: String) {
+        runCatching {
+            val directory = File(filesDir, "saves/$systemId").apply { mkdirs() }
+            File(directory, "last_core_diagnostics.txt").writeText(
+                "Frontend preparation failed\nSystem: $systemId\nGame: $gameName\nError: $message\n",
+            )
+        }
     }
 
     private fun showPreparation(name: String) {
@@ -499,12 +615,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun isReusablePreparedFile(file: File, originalName: String, systemId: String): Boolean {
+        if (file.extension.lowercase() in setOf("gdi", "cue", "m3u")) {
+            return runCatching { validateDiscSidecars(file, systemId) }.isSuccess
+        }
         val originalExtension = originalName.substringAfterLast('.', "").lowercase()
         if (systemId == "dreamcast" && originalExtension in setOf("zip", "7z")) {
             // Older builds could cache track01.iso as the selected game even
             // when the archive also contained a GDI descriptor. Force those
             // ambiguous prepared copies through the corrected selector once.
-            return file.extension.lowercase() !in setOf("iso", "bin", "raw", "wav", "img", "dat")
+            return when (file.extension.lowercase()) {
+                "gdi", "cue", "m3u" -> runCatching { validateDiscSidecars(file, systemId) }.isSuccess
+                "cdi", "chd", "lst", "elf" -> true
+                else -> false
+            }
         }
         return true
     }
@@ -515,9 +638,15 @@ class MainActivity : AppCompatActivity() {
         systemId: String,
         romDirectory: File,
         report: (String, Long, Long) -> Unit,
+        companionDocuments: List<SelectedDocument> = emptyList(),
     ): File {
         val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
         val key = uri.toString().hashCode().toUInt().toString(16)
+        if (companionDocuments.isNotEmpty() && name.substringAfterLast('.', "").lowercase() !in setOf("zip", "7z")) {
+            return prepareLooseDiscSet(
+                SelectedDocument(uri, name), companionDocuments, key, systemId, romDirectory, report,
+            )
+        }
         val source = File(romDirectory, "${key}_$safeName")
         val maxBytes = maxRomBytes(systemId)
         report("Checking file and storage", 0L, -1L)
@@ -543,6 +672,45 @@ class MainActivity : AppCompatActivity() {
             "7z" -> extractSevenZip(source, key, systemId, romDirectory, report)
             else -> source
         }
+    }
+
+    /** Copies a loose CUE/GDI set selected together into one core-readable directory. */
+    private fun prepareLooseDiscSet(
+        primary: SelectedDocument,
+        companions: List<SelectedDocument>,
+        key: String,
+        systemId: String,
+        outputDirectory: File,
+        report: (String, Long, Long) -> Unit,
+    ): File {
+        val root = File(outputDirectory, "${key}_disc").apply { mkdirs() }
+        val maxBytes = maxRomBytes(systemId)
+        val documents = listOf(primary) + companions
+        val expectedTotal = documents.sumOf { querySize(it.uri).coerceAtLeast(0L) }
+            .takeIf { it > 0L } ?: -1L
+        var completed = 0L
+        var primaryFile: File? = null
+        documents.forEach { document ->
+            val leafName = document.name.substringAfterLast('/').substringAfterLast('\\')
+                .replace('\u0000', '_').ifBlank { "disc_file" }
+            val output = File(root, leafName)
+            contentResolver.openInputStream(document.uri).use { input ->
+                requireNotNull(input) { "Android could not open $leafName." }
+                val written = writeLimited(
+                    input,
+                    output,
+                    maxBytes,
+                    "Copying $leafName",
+                    querySize(document.uri),
+                ) { _, fileCompleted, _ ->
+                    report("Copying loose disc files", completed + fileCompleted, expectedTotal)
+                }
+                completed += written
+            }
+            if (document.uri == primary.uri) primaryFile = output
+        }
+        report("Copying loose disc files", completed, expectedTotal)
+        return requireNotNull(primaryFile) { "The selected disc descriptor could not be prepared." }
     }
 
     private fun validatePreparedRom(rom: File, systemId: String) {
@@ -583,17 +751,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             "cue" -> {
-                val files = rom.readLines().filter { it.trimStart().startsWith("FILE ", ignoreCase = true) }
-                require(files.isNotEmpty()) { "This ${systemId.uppercase()} CUE has no track files." }
-                files.forEach { line ->
-                    val rest = line.trim().substringAfter(' ', "").trim()
-                    val referenced = when {
-                        rest.startsWith("\"") -> rest.substringAfter('"').substringBefore('"')
-                        rest.startsWith("'") -> rest.substring(1).substringBefore("'")
-                        else -> rest.split(Regex("\\s+")).firstOrNull().orEmpty()
-                    }
-                    requireSidecar(rom, referenced, "${systemId.uppercase()} CUE")
+                val cueFile = Regex("^\\s*FILE\\s+(?:\"([^\"]+)\"|'([^']+)'|(\\S+))", RegexOption.IGNORE_CASE)
+                val files = rom.readLines().mapNotNull { line ->
+                    val match = cueFile.find(line) ?: return@mapNotNull null
+                    match.groupValues.drop(1).firstOrNull { it.isNotBlank() }
                 }
+                require(files.isNotEmpty()) { "This ${systemId.uppercase()} CUE has no track files." }
+                files.forEach { referenced -> requireSidecar(rom, referenced, "${systemId.uppercase()} CUE") }
             }
             "m3u" -> {
                 val entries = rom.readLines().map { it.trim() }.filter { it.isNotBlank() && !it.startsWith("#") }
@@ -610,7 +774,7 @@ class MainActivity : AppCompatActivity() {
             .joinToString(File.separator)
         val sidecar = findSidecar(descriptor.parentFile ?: File("."), clean)
         require(sidecar.isFile && sidecar.length() > 0L) {
-            "$format is missing track file ${reference.substringAfterLast('/')} — select a ZIP/7z containing the complete disc set."
+            "$format cannot access track file ${reference.substringAfterLast('/')} — select the descriptor and all tracks together, or choose a ZIP/7z containing the complete disc set."
         }
     }
 
@@ -784,7 +948,10 @@ class MainActivity : AppCompatActivity() {
         // GDI/CUE descriptors often reference raw or WAV tracks that are not
         // themselves launchable entries. Keep them beside the descriptor so
         // Flycast can resolve the relative paths after extraction.
-        return name.substringAfterLast('.', "").lowercase() in setOf("raw", "track", "wav", "sub", "img", "toc", "dat", "idx", "iso")
+        return name.substringAfterLast('.', "").lowercase() in setOf(
+            "raw", "track", "wav", "flac", "ogg", "mp3", "ape", "ecm",
+            "sub", "img", "toc", "dat", "idx", "iso",
+        )
     }
 
     /** Keeps disc-image sidecar files next to their descriptor (e.g. GDI + tracks). */

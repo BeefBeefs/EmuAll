@@ -468,12 +468,12 @@ bool environment(unsigned command, void* data) {
                         value = "disabled";
                     if (key == "dolphin_main_cpu_thread")
                         value = "enabled";
-                    // F-Zero GX and other titles read the embedded frame
-                    // buffer from the CPU to build HUD, menu and text layers.
-                    // The libretro default skips those reads, leaving the 3D
-                    // scene intact while 2D elements flicker or disappear.
+                    // Dolphin's current F-Zero GX compatibility profile keeps
+                    // CPU EFB access disabled. Forcing it globally introduced
+                    // extra mid-frame readbacks without curing presentation
+                    // flicker, so retain the safe/default behavior.
                     if (key == "dolphin_efb_access_enable")
-                        value = "enabled";
+                        value = "disabled";
                     // Dolphin's own compatibility profiles use the safe
                     // texture cache for games whose menu glyphs disappear,
                     // and accurate depth calculation for titles with missing

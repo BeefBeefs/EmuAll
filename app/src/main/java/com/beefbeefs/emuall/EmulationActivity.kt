@@ -97,17 +97,20 @@ class EmulationActivity : AppCompatActivity() {
                 landscapeLeft = left
                 landscapeRight = right
                 body.orientation = LinearLayout.HORIZONTAL
-                body.removeView(surfaceHost)
-                body.addView(left, LinearLayout.LayoutParams(dp(176), LinearLayout.LayoutParams.MATCH_PARENT))
-                body.addView(surfaceHost, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-                body.addView(right, LinearLayout.LayoutParams(dp(184), LinearLayout.LayoutParams.MATCH_PARENT))
+                // Keep surfaceHost (and therefore GLSurfaceView) attached to
+                // the window. Only the non-GL control wrappers are inserted
+                // around it; detaching an ancestor of a live GLSurfaceView
+                // can still tear down its EGL surface during rotation.
+                body.addView(left, 0, LinearLayout.LayoutParams(dp(176), LinearLayout.LayoutParams.MATCH_PARENT))
+                val surfaceIndex = body.indexOfChild(surfaceHost)
+                body.addView(right, surfaceIndex + 1, LinearLayout.LayoutParams(dp(184), LinearLayout.LayoutParams.MATCH_PARENT))
+                surfaceHost.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
             }
         } else {
             body.orientation = LinearLayout.VERTICAL
             landscapeLeft?.let { body.removeView(it) }
             landscapeRight?.let { body.removeView(it) }
             if (landscapeLeft != null) {
-                body.removeView(surfaceHost)
                 val directionalPad = findViewById<View>(R.id.directionalPad)
                 val actionButtons = findViewById<View>(R.id.actionButtons)
                 val centerButtons = findViewById<View>(R.id.centerButtons)
@@ -123,8 +126,9 @@ class EmulationActivity : AppCompatActivity() {
                 controls.addView(centerButtons, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                     gravity = android.view.Gravity.CENTER_HORIZONTAL or android.view.Gravity.BOTTOM
                 })
-                body.addView(surfaceHost, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-                body.addView(controls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240)))
+                val surfaceIndex = body.indexOfChild(surfaceHost)
+                body.addView(controls, surfaceIndex + 1, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(240)))
+                surfaceHost.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
                 landscapeLeft = null
                 landscapeRight = null
             } else {

@@ -37,7 +37,15 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 
-    fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, coreName: String, onStatus: (String) -> Unit) {
+    fun start(
+        corePath: String,
+        romPath: String,
+        savePath: String,
+        systemDirectory: String,
+        coreName: String,
+        videoBackend: VideoBackend = VideoBackend.OPENGL_ES,
+        onStatus: (String) -> Unit,
+    ) {
         if (!running.compareAndSet(false, true)) return
         emulationThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
@@ -74,7 +82,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                     track.release()
                 }, "EmuAll-Audio").also { it.start() }
             }
-            post { onStatus("$coreName · Starting · target ${"%.1f".format(coreFps)} FPS") }
+            post { onStatus("$coreName · ${videoBackend.label} · Starting · target ${"%.1f".format(coreFps)} FPS") }
             val baseFrameNanos = (1_000_000_000.0 / coreFps).toLong()
             var deadline = System.nanoTime()
             var measurementStart = deadline
@@ -124,7 +132,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                         val actualFps = measuredFrames * 1_000_000_000.0 / measurementNanos
                         val mode = if (speed.get() > 1) " · ${speed.get()}×" else ""
                         if (now >= transientStatusUntil) {
-                            post { onStatus("$coreName · ${"%.1f".format(actualFps)} FPS$mode") }
+                            post { onStatus("$coreName · ${videoBackend.label} · ${"%.1f".format(actualFps)} FPS$mode") }
                         }
                         measurementStart = now
                         measuredFrames = 0

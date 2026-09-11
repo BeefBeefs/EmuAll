@@ -14,8 +14,8 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="46dp" android:gravity="center" android:orientation="horizontal">
             <Button android:id="@+id/pauseButton" style="@style/EmuButton.Toolbar" android:text="Pause" />
             <Button android:id="@+id/fastButton" style="@style/EmuButton.Toolbar" android:text="FF" />
-            <Button android:id="@+id/quickSaveButton" style="@style/EmuButton.Toolbar" android:contentDescription="Quick save Slot 1; long press for other slots" android:text="Save" />
-            <Button android:id="@+id/quickLoadButton" style="@style/EmuButton.Toolbar" android:contentDescription="Quick load Slot 1; long press for other slots" android:text="Load" />
+            <Button android:id="@+id/quickSaveButton" style="@style/EmuButton.Toolbar" android:contentDescription="Choose a save-state slot" android:text="Save..." />
+            <Button android:id="@+id/quickLoadButton" style="@style/EmuButton.Toolbar" android:contentDescription="Choose a load-state slot" android:text="Load..." />
             <Button android:id="@+id/resetButton" style="@style/EmuButton.Toolbar" android:text="Reset" />
             <Button android:id="@+id/menuButton" style="@style/EmuButton.Toolbar" android:text="Menu" />
         </LinearLayout>
@@ -39,7 +39,7 @@
             android:layout_width="match_parent"
             android:layout_height="240dp"
             android:padding="12dp">
-        <GridLayout android:layout_width="156dp" android:layout_height="156dp" android:layout_gravity="start|center_vertical" android:columnCount="3" android:rowCount="3">
+        <GridLayout android:id="@+id/directionalPad" android:layout_width="156dp" android:layout_height="156dp" android:layout_gravity="start|center_vertical" android:columnCount="3" android:rowCount="3">
             <Space android:layout_width="52dp" android:layout_height="52dp" />
             <Button android:id="@+id/upButton" style="@style/EmuButton.Pad" android:text="▲" />
             <Space android:layout_width="52dp" android:layout_height="52dp" />
@@ -49,7 +49,7 @@
             <Space android:layout_width="52dp" android:layout_height="52dp" />
             <Button android:id="@+id/downButton" style="@style/EmuButton.Pad" android:text="▼" />
         </GridLayout>
-        <LinearLayout android:layout_width="170dp" android:layout_height="wrap_content" android:layout_gravity="end|center_vertical" android:gravity="center" android:orientation="vertical">
+        <LinearLayout android:id="@+id/actionButtons" android:layout_width="170dp" android:layout_height="wrap_content" android:layout_gravity="end|center_vertical" android:gravity="center" android:orientation="vertical">
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:orientation="horizontal">
                 <Button android:id="@+id/lButton" style="@style/EmuButton.Shoulder" android:text="L" />
                 <Button android:id="@+id/rButton" style="@style/EmuButton.Shoulder" android:text="R" />
@@ -59,7 +59,7 @@
                 <Button android:id="@+id/aButton" style="@style/EmuButton.Round" android:layout_marginStart="20dp" android:text="A" />
             </LinearLayout>
         </LinearLayout>
-        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center_horizontal|bottom" android:orientation="horizontal">
+        <LinearLayout android:id="@+id/centerButtons" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center_horizontal|bottom" android:orientation="horizontal">
             <Button android:id="@+id/selectButton" style="@style/EmuButton.Center" android:text="Select" />
             <Button android:id="@+id/startButton" style="@style/EmuButton.Center" android:layout_marginStart="12dp" android:text="Start" />
         </LinearLayout>

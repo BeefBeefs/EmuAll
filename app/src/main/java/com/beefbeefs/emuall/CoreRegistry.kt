@@ -6,6 +6,9 @@ data class CoreDefinition(
     val displayName: String,
     val libraryName: String,
     val supportedSystems: Set<String>,
+    val preferredVideoBackend: VideoBackend = VideoBackend.OPENGL_ES,
+    val supportsVulkanRendering: Boolean = false,
+    val requiresHardwareRendering: Boolean = false,
 )
 
 /**
@@ -22,6 +25,35 @@ object CoreRegistry {
             libraryName = "libmgba_libretro.so",
             supportedSystems = setOf("gba", "gbc"),
         ),
+        CoreDefinition("fceumm", "FCEUmm", "libfceumm_libretro_android.so", setOf("nes")),
+        CoreDefinition("snes9x", "Snes9x", "libsnes9x_libretro_android.so", setOf("snes")),
+        CoreDefinition("genesis_plus_gx", "Genesis Plus GX", "libgenesis_plus_gx_libretro_android.so", setOf("genesis")),
+        CoreDefinition("pcsx_rearmed", "PCSX-ReARMed", "libpcsx_rearmed_libretro_android.so", setOf("ps1")),
+        CoreDefinition(
+            "ppsspp", "PPSSPP", "libppsspp_libretro_android.so", setOf("psp"),
+            preferredVideoBackend = VideoBackend.VULKAN,
+            requiresHardwareRendering = true,
+        ),
+        CoreDefinition(
+            "mupen64plus_next_gles3", "Mupen64Plus-Next", "libmupen64plus_next_gles3_libretro_android.so", setOf("n64"),
+            preferredVideoBackend = VideoBackend.VULKAN,
+            requiresHardwareRendering = true,
+        ),
+        CoreDefinition(
+            "flycast", "Flycast", "libflycast_libretro_android.so", setOf("dreamcast"),
+            preferredVideoBackend = VideoBackend.VULKAN,
+            requiresHardwareRendering = true,
+        ),
+        CoreDefinition(
+            "dolphin", "Dolphin", "libdolphin_libretro_android.so", setOf("gamecube"),
+            preferredVideoBackend = VideoBackend.VULKAN,
+            requiresHardwareRendering = true,
+        ),
+        CoreDefinition(
+            "pcsx2", "PCSX2", "libpcsx2_libretro_android.so", setOf("ps2"),
+            preferredVideoBackend = VideoBackend.VULKAN,
+            requiresHardwareRendering = true,
+        ),
     )
 
     fun byId(id: String?): CoreDefinition? = bundled.firstOrNull { it.id == id }
@@ -30,5 +62,14 @@ object CoreRegistry {
         val system = Systems.byId(systemId) ?: return null
         val core = byId(system.coreId) ?: return null
         return core.takeIf { systemId in it.supportedSystems }
+    }
+
+    /** Returns a core only when the current frontend can render it safely. */
+    fun playableForSystem(context: android.content.Context, systemId: String): CoreDefinition? {
+        val core = forSystem(systemId) ?: return null
+        if (!core.requiresHardwareRendering) return core
+        return core.takeIf {
+            core.supportsVulkanRendering && GraphicsBackendSelector.vulkanAvailable(context)
+        }
     }
 }

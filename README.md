@@ -2,7 +2,7 @@
 
 EmuAll is an Android-native multi-system emulator frontend inspired by the emulator portion of PixelPalette/PixelPlayer. It does not use a WebView or JavaScript emulator runtime.
 
-## Build 7
+## Build 8
 
 - Native Kotlin Android UI using the PixelPlayer dark green/orange visual language
 - Extensible system catalog: the original GBA-through-Saturn lineup plus Dreamcast/NAOMI, PS2, GameCube/Wii, and a guarded future Xbox entry
@@ -27,6 +27,10 @@ Build 6 adds three screenshot-backed save-state slots per game, per-game/system 
 
 Build 7 makes the launcher capability-driven. A core registry now owns the mapping between systems and bundled native libraries, so adding a validated Android core does not require another hard-coded launch path. The session receives its selected core and reports its name generically. Physical controller mappings are stored per system; the launcher listens for Android input-device changes, enables the mapping screen only when a gamepad or joystick is detected, and otherwise keeps the control visibly disabled. Each mapping row can be rebound by pressing a controller button and reset to the defaults.
 
+Build 8 bundles ARM64 libretro cores for NES/Famicom (FCEUmm), SNES (Snes9x), Genesis/Mega Drive (Genesis Plus GX), and PlayStation 1 (PCSX-ReARMed). PSP, N64, Dreamcast, GameCube/Wii, and PS2 cores are also packaged and registered, but their hardware-rendering sessions stay gated until the Android Vulkan/OpenGL hardware context is validated. The renderer capability layer now makes Vulkan the preferred path for hardware cores and keeps OpenGL ES as the safe fallback for software-video cores.
+
+The virtual controls now hold their pressed visual state while a touch is down. In landscape, the directional pad sits left of the game, the game remains centered, and the action buttons sit on the right. Save and Load are explicit slot menus covering Slots 1–3.
+
 The session toolbar saves and loads Slot 1 with a tap; long-press either button to choose Slots 1–3.
 
 Vulkan is the preferred backend for hardware-rendered cores. OpenGL ES is retained as an automatic compatibility fallback and for cores that do not offer Vulkan. mGBA produces software-rendered frames, so its first implementation uploads those frames through the lightweight OpenGL ES fallback path; it does not expose its own Vulkan renderer.
@@ -50,5 +54,8 @@ This single-session design carries forward PixelPlayer's rule that launching one
 4. Add archive extraction and folder-library scanning.
 5. Add remaining cores in compatibility tiers, testing one system at a time.
 6. Extend the registry with validated cores and system-specific graphics/input capabilities.
+7. Bundle NES/SNES/Genesis/PS1 software cores, then add the Vulkan-first renderer capability path.
+8. Bundle PSP/N64/Dreamcast/GameCube/Wii/PS2 candidates with strict hardware-rendering gates.
+9. Validate hardware-context rendering per device class before enabling those cores for launch.
 
 The catalog is intentionally capability-driven rather than capped to a hard-coded console generation. Software-video cores use the common OpenGL texture path. Dreamcast, PS2, and GameCube/Wii are tagged as hardware-rendered cores and receive runtime GPU checks. A system is exposed as playable only when its Android core and required graphics API have both been validated. Original Xbox therefore remains a guarded future entry instead of claiming support that Android cannot currently provide.

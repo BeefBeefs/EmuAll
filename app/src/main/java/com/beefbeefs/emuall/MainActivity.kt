@@ -91,17 +91,21 @@ class MainActivity : AppCompatActivity() {
     private fun renderSystemPage() {
         val system = selectedSystem
         val core = CoreRegistry.forSystem(system.id)
+        val playableCore = CoreRegistry.playableForSystem(this, system.id)
         findViewById<TextView>(R.id.systemKicker).text = "${system.shortName} · ${system.integrationTier.label.uppercase()}"
         findViewById<TextView>(R.id.systemTitle).text = system.displayName
+        val renderer = core?.let { GraphicsBackendSelector.describe(this, it) }
+        val rendererNote = if (core != null && playableCore == null) "\nVulkan hardware-rendering support is staged but not active for this core yet." else ""
         val formats = if (system.extensions.isEmpty()) "No Android-compatible core is available yet."
-        else "Core: ${core?.displayName ?: system.coreName}\nRecognized: ${system.extensions.joinToString { ".$it" }}"
+        else "Core: ${core?.displayName ?: system.coreName}\nRenderer: ${renderer ?: "Not bundled"}\nRecognized: ${system.extensions.joinToString { ".$it" }}$rendererNote"
         val bios = if (system.biosRequired) "\nA legally obtained BIOS is required." else ""
         findViewById<TextView>(R.id.systemDetails).text = formats + bios
         findViewById<Button>(R.id.chooseGameButton).apply {
-            isEnabled = supports(system) && core != null
+            isEnabled = supports(system) && playableCore != null
             text = when {
                 core == null -> "Android Core Not Available"
                 !supports(system) -> "GPU Requirements Not Met"
+                playableCore == null -> "Vulkan Renderer Required"
                 else -> "Choose ${system.shortName} Game"
             }
             setOnClickListener { openGamePicker() }
@@ -136,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         recentStore.add(RecentGame(system.id, name, uri, System.currentTimeMillis()))
         renderSystemPage()
-        if (CoreRegistry.forSystem(system.id) != null) launchGame(uri, name, system.id)
+        if (CoreRegistry.playableForSystem(this, system.id) != null) launchGame(uri, name, system.id)
         else Toast.makeText(this, "$name added. ${system.coreName} integration is not playable yet.", Toast.LENGTH_LONG).show()
     }
 
@@ -162,7 +166,7 @@ class MainActivity : AppCompatActivity() {
             }
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(actionButton("Play", true) {
-                if (CoreRegistry.forSystem(game.systemId) != null) launchGame(game.uri, game.name, game.systemId)
+                if (CoreRegistry.playableForSystem(this, game.systemId) != null) launchGame(game.uri, game.name, game.systemId)
                 else Toast.makeText(this, "${selectedSystem.coreName} is not integrated yet.", Toast.LENGTH_SHORT).show()
             })
             row.addView(actionButton("Remove", false) {
@@ -180,8 +184,11 @@ class MainActivity : AppCompatActivity() {
         val savedCount = games.sumOf { game -> (1..3).count { stateFile(localFiles(game), it).isFile } }
         stateSection.addView(sectionHeading("SAVE STATES", "$savedCount STATES"))
         if (savedCount == 0) {
-            val copy = if (CoreRegistry.forSystem(selectedSystem.id) != null) "Quick Save during a game to create a screenshot-backed state here."
-            else "Save states will appear here when this system's native core is added."
+            val copy = when {
+                CoreRegistry.playableForSystem(this, selectedSystem.id) != null -> "Quick Save during a game to create a screenshot-backed state here."
+                CoreRegistry.forSystem(selectedSystem.id)?.requiresHardwareRendering == true -> "Save states will appear here after hardware rendering is validated for this core."
+                else -> "Save states will appear here when this system's native core is added."
+            }
             stateSection.addView(emptyCard(copy))
             return
         }
@@ -231,9 +238,15 @@ class MainActivity : AppCompatActivity() {
     private fun thumbnailFile(state: File) = File("${state.absolutePath}.png")
 
     private fun launchGame(uri: Uri, name: String, systemId: String = selectedSystem.id, autoLoad: Boolean = false, autoLoadSlot: Int = 1) {
-        val core = CoreRegistry.forSystem(systemId)
+        val core = CoreRegistry.playableForSystem(this, systemId)
         if (core == null) {
-            Toast.makeText(this, "${Systems.byId(systemId)?.coreName ?: "This core"} is not integrated yet.", Toast.LENGTH_SHORT).show()
+            val registered = CoreRegistry.forSystem(systemId)
+            val message = if (registered?.requiresHardwareRendering == true) {
+                "${registered.displayName} needs the Vulkan hardware-rendering frontend before it can launch."
+            } else {
+                "${registered?.displayName ?: Systems.byId(systemId)?.coreName ?: "This core"} is not integrated yet."
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             return
         }
         Toast.makeText(this, "Preparing $name…", Toast.LENGTH_SHORT).show()

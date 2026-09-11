@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -70,6 +71,40 @@ struct Session {
     bool initialized{};
     bool gameLoaded{};
 } g;
+
+void core_failure(const char* operation, const char* detail) {
+    g.lastError = std::string(operation) + " failed";
+    if (detail && *detail) {
+        g.lastError += ": ";
+        g.lastError += detail;
+    }
+    __android_log_print(ANDROID_LOG_ERROR, "EmuAllNative", "%s", g.lastError.c_str());
+}
+
+template <typename Function>
+bool call_core_bool(const char* operation, Function&& function) {
+    try {
+        return function();
+    } catch (const std::exception& error) {
+        core_failure(operation, error.what());
+    } catch (...) {
+        core_failure(operation, "unknown native exception");
+    }
+    return false;
+}
+
+template <typename Function>
+bool call_core_void(const char* operation, Function&& function) {
+    try {
+        function();
+        return true;
+    } catch (const std::exception& error) {
+        core_failure(operation, error.what());
+    } catch (...) {
+        core_failure(operation, "unknown native exception");
+    }
+    return false;
+}
 
 void core_log(enum retro_log_level level, const char* format, ...) {
     int priority = level == RETRO_LOG_ERROR ? ANDROID_LOG_ERROR :
@@ -143,14 +178,16 @@ bool environment(unsigned command, void* data) {
         case RETRO_ENVIRONMENT_SET_HW_RENDER: {
             if (!g.hardwareRendering || !data) return false;
             auto* callback = static_cast<retro_hw_render_callback*>(data);
-            // The first hardware path is deliberately GLES3. Vulkan cores can
-            // be added later through the separate libretro Vulkan interface.
-            if (callback->context_type == RETRO_HW_CONTEXT_VULKAN ||
-                (callback->context_type != RETRO_HW_CONTEXT_OPENGL &&
-                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
-                 callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
-                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
-                 callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION)) return false;
+            // The Android surface currently exposes GLES 3.0. Never claim to
+            // provide a Vulkan or desktop-OpenGL context and then silently
+            // hand the core a different API: Dolphin/Flycast branch on this
+            // value during renderer setup, and that mismatch can terminate
+            // the process before a frame is produced. Cores that ask for
+            // GLES2 are accepted on the GLES3 context because GLES3 is
+            // backwards-compatible with their shader/API subset.
+            if (callback->context_type != RETRO_HW_CONTEXT_OPENGLES2 &&
+                callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
+                callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION) return false;
             __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",
                 "Hardware render request: context=%d depth=%d stencil=%d version=%u.%u",
                 static_cast<int>(callback->context_type), callback->depth, callback->stencil,
@@ -384,7 +421,9 @@ bool load_api(const char* path) {
     LOAD("retro_unserialize", unserialize);
     LOAD("retro_get_memory_data", memoryData); LOAD("retro_get_memory_size", memorySize);
 #undef LOAD
-    if (g.api.apiVersion() != RETRO_API_VERSION) { g.lastError = "Unsupported libretro API"; return false; }
+    unsigned apiVersion = 0;
+    if (!call_core_bool("retro_api_version", [&] { apiVersion = g.api.apiVersion(); return true; })) return false;
+    if (apiVersion != RETRO_API_VERSION) { g.lastError = "Unsupported libretro API"; return false; }
     return true;
 }
 
@@ -399,8 +438,13 @@ bool read_file(const std::string& path, std::vector<uint8_t>& output) {
 
 void save_battery() {
     if (!g.gameLoaded || g.savePath.empty()) return;
-    size_t size = g.api.memorySize(RETRO_MEMORY_SAVE_RAM);
-    void* data = g.api.memoryData(RETRO_MEMORY_SAVE_RAM);
+    size_t size = 0;
+    void* data = nullptr;
+    if (!call_core_bool("retro_get_memory_size", [&] {
+        size = g.api.memorySize(RETRO_MEMORY_SAVE_RAM);
+        data = g.api.memoryData(RETRO_MEMORY_SAVE_RAM);
+        return true;
+    })) return;
     if (!size || !data) return;
     std::ofstream output(g.savePath, std::ios::binary | std::ios::trunc);
     output.write(static_cast<char*>(data), static_cast<std::streamsize>(size));
@@ -408,10 +452,11 @@ void save_battery() {
 
 bool quick_save(const std::string& path) {
     if (!g.gameLoaded) { g.lastError = "No game is running"; return false; }
-    size_t size = g.api.serializeSize();
+    size_t size = 0;
+    if (!call_core_bool("retro_serialize_size", [&] { size = g.api.serializeSize(); return true; })) return false;
     if (!size) { g.lastError = "This core does not support save states"; return false; }
     std::vector<uint8_t> state(size);
-    if (!g.api.serialize(state.data(), state.size())) {
+    if (!call_core_bool("retro_serialize", [&] { return g.api.serialize(state.data(), state.size()); })) {
         g.lastError = "The core could not create a save state";
         return false;
     }
@@ -431,7 +476,7 @@ bool quick_load(const std::string& path) {
     if (!g.gameLoaded) { g.lastError = "No game is running"; return false; }
     std::vector<uint8_t> state;
     if (!read_file(path, state)) { g.lastError = "No quick save exists for this game"; return false; }
-    if (!g.api.unserialize(state.data(), state.size())) {
+    if (!call_core_bool("retro_unserialize", [&] { return g.api.unserialize(state.data(), state.size()); })) {
         g.lastError = "This quick save is not compatible with the current core";
         return false;
     }
@@ -441,11 +486,19 @@ bool quick_load(const std::string& path) {
 }
 
 void stop_session() {
-    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy) g.hardwareCallback.context_destroy();
-    if (g.gameLoaded) { save_battery(); g.api.unloadGame(); g.gameLoaded = false; }
-    if (g.initialized) { g.api.deinit(); g.initialized = false; }
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy)
+        call_core_void("hardware context destroy", [&] { g.hardwareCallback.context_destroy(); });
+    if (g.gameLoaded) {
+        save_battery();
+        call_core_void("retro_unload_game", [&] { g.api.unloadGame(); });
+        g.gameLoaded = false;
+    }
+    if (g.initialized) {
+        call_core_void("retro_deinit", [&] { g.api.deinit(); });
+        g.initialized = false;
+    }
     if (g.api.handle) dlclose(g.api.handle);
-    g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear();
+    g.api = {}; g.rom.clear(); g.frame.clear(); g.audio.clear(); g.variables.clear();
     g.width = 0; g.height = 0; g.videoAspectRatio = 0.0; g.hardwareFramebuffer = 0; g.hardwareRendering = false;
     g.hardwareContextConfigured = false; g.hardwareCallback = {};
 }
@@ -479,18 +532,35 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     size_t slash = g.savePath.find_last_of('/');
     g.saveDirectory = slash == std::string::npos ? g.systemDirectory : g.savePath.substr(0, slash);
     std::string core = from_java(env, corePath), romPathValue = from_java(env, romPath);
-    if (!load_api(core.c_str())) return false;
+    __android_log_print(ANDROID_LOG_INFO, "EmuAllNative", "Starting core=%s rom=%s hardware=%d system=%s",
+        core.c_str(), romPathValue.c_str(), g.hardwareRendering ? 1 : 0, g.systemDirectory.c_str());
+    if (!load_api(core.c_str())) {
+        stop_session();
+        return false;
+    }
     g.api.setEnvironment(environment); g.api.setVideoRefresh(video);
     g.api.setAudioSample(audio_sample); g.api.setAudioBatch(audio_batch);
     g.api.setInputPoll(input_poll); g.api.setInputState(input_state);
-    g.api.init(); g.initialized = true;
+    if (!call_core_void("retro_init", [&] { g.api.init(); })) {
+        stop_session();
+        return false;
+    }
+    g.initialized = true;
     // Some cores request hardware rendering from retro_init(), while others
     // (including Mupen64Plus-Next) do it from retro_load_game().  Reset any
     // context negotiated during init, then repeat the handshake after
     // retro_load_game() so the core's callbacks are always invoked only after
     // the game has requested them and the Android GL context is current.
-    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
-    retro_system_info systemInfo{}; g.api.getSystemInfo(&systemInfo);
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset &&
+        !call_core_void("hardware context reset", [&] { g.hardwareCallback.context_reset(); })) {
+        stop_session();
+        return false;
+    }
+    retro_system_info systemInfo{};
+    if (!call_core_void("retro_get_system_info", [&] { g.api.getSystemInfo(&systemInfo); })) {
+        stop_session();
+        return false;
+    }
     // Disc-based cores (Dolphin, Flycast and several PSP builds) set
     // need_fullpath because they stream large images from disk. Reading a
     // 1.3 GB GameCube ISO into g.rom first can exhaust a phone's heap and
@@ -504,17 +574,30 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
     retro_game_info game{}; game.path = romPathValue.c_str();
     game.data = systemInfo.need_fullpath ? nullptr : g.rom.data();
     game.size = systemInfo.need_fullpath ? 0 : g.rom.size();
-    if (!g.api.loadGame(&game)) { g.lastError = "The selected core rejected this file"; stop_session(); return false; }
+    if (!call_core_bool("retro_load_game", [&] { return g.api.loadGame(&game); })) {
+        if (g.lastError.empty() || g.lastError.rfind("retro_load_game failed", 0) != 0)
+            g.lastError = "The selected core rejected this file";
+        stop_session();
+        return false;
+    }
     if (g.hardwareRendering) {
         if (!g.hardwareContextConfigured || !g.hardwareCallback.context_reset) {
             g.lastError = "The core did not negotiate a supported GLES3 graphics context";
             stop_session();
             return false;
         }
-        g.hardwareCallback.context_reset();
+        if (!call_core_void("hardware context reset", [&] { g.hardwareCallback.context_reset(); })) {
+            stop_session();
+            return false;
+        }
     }
     g.gameLoaded = true;
-    retro_system_av_info av{}; g.api.getSystemAvInfo(&av); g.fps = av.timing.fps; g.sampleRate = av.timing.sample_rate;
+    retro_system_av_info av{};
+    if (!call_core_void("retro_get_system_av_info", [&] { g.api.getSystemAvInfo(&av); })) {
+        stop_session();
+        return false;
+    }
+    g.fps = av.timing.fps; g.sampleRate = av.timing.sample_rate;
     g.videoAspectRatio = av.geometry.aspect_ratio > 0.0
         ? av.geometry.aspect_ratio
         : (av.geometry.base_height ? static_cast<double>(av.geometry.base_width) / av.geometry.base_height : 0.0);
@@ -527,18 +610,28 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_hardwareContextReset(JNIEnv*, jobject) {
-    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset) g.hardwareCallback.context_reset();
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_reset)
+        call_core_void("hardware context reset", [&] { g.hardwareCallback.context_reset(); });
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_hardwareContextDestroy(JNIEnv*, jobject) {
-    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy) g.hardwareCallback.context_destroy();
+    if (g.hardwareContextConfigured && g.hardwareCallback.context_destroy)
+        call_core_void("hardware context destroy", [&] { g.hardwareCallback.context_destroy(); });
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setHardwareFramebuffer(JNIEnv*, jobject, jint framebuffer) {
     g.hardwareFramebuffer = framebuffer > 0 ? static_cast<uintptr_t>(framebuffer) : 0;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) { if (g.gameLoaded) g.api.run(); }
+extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_runFrame(JNIEnv*, jobject) {
+    if (!g.gameLoaded) return JNI_FALSE;
+    if (call_core_void("retro_run", [&] { g.api.run(); })) return JNI_TRUE;
+    // A C++ exception escaping a core callback must not leave the frontend
+    // driving a half-torn-down core on the next frame. Keep this cleanup on
+    // the same GL/emulation thread that invoked retro_run().
+    stop_session();
+    return JNI_FALSE;
+}
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_copyFrame(JNIEnv* env, jobject, jobject output) {
     void* target = env->GetDirectBufferAddress(output); jlong capacity = env->GetDirectBufferCapacity(output);
     if (!target || capacity <= 0) return 0;
@@ -570,7 +663,9 @@ extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_dra
 extern "C" JNIEXPORT jint JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_sampleRate(JNIEnv*, jobject) { return static_cast<jint>(g.sampleRate + .5); }
 extern "C" JNIEXPORT jdouble JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_framesPerSecond(JNIEnv*, jobject) { return g.fps; }
 extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_setInputMask(JNIEnv*, jobject, jint mask) { g.inputMask = static_cast<uint32_t>(mask); }
-extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_reset(JNIEnv*, jobject) { if (g.gameLoaded) g.api.reset(); }
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_reset(JNIEnv*, jobject) {
+    if (g.gameLoaded) call_core_void("retro_reset", [&] { g.api.reset(); });
+}
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_quickSave(JNIEnv* env, jobject, jstring path) {
     return quick_save(from_java(env, path));
 }

@@ -22,7 +22,7 @@ object NativeCoreBridge {
     external fun setHardwareFramebuffer(framebuffer: Int)
     external fun hardwareContextDestroy()
     external fun hardwareContextReset()
-    external fun runFrame()
+    external fun runFrame(): Boolean
     external fun copyFrame(destination: java.nio.ByteBuffer): Int
     external fun frameWidth(): Int
     external fun frameHeight(): Int

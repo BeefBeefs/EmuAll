@@ -105,7 +105,7 @@ class MainActivity : AppCompatActivity() {
         val formats = if (system.extensions.isEmpty()) "No Android-compatible core is available yet."
         else "Core: ${core?.displayName ?: system.coreName}\nRenderer: ${renderer ?: "Not bundled"}\nRecognized: ${system.extensions.joinToString { ".$it" }}$rendererNote"
         val bios = if (system.biosRequired) "\nA legally obtained BIOS is required." else ""
-        val biosReady = !system.biosRequired || countFiles(biosDirectory(system.id)) > 0
+        val biosReady = biosIsReady(system.id)
         findViewById<TextView>(R.id.systemDetails).text = formats + bios
         renderBiosSection(system)
         findViewById<Button>(R.id.chooseGameButton).apply {
@@ -450,14 +450,16 @@ class MainActivity : AppCompatActivity() {
     private fun renderBiosSection(system: SystemDefinition) {
         val directory = biosDirectory(system.id)
         val fileCount = countFiles(directory)
+        val ready = biosIsReady(system.id)
         val hint = when (system.id) {
-            "dreamcast" -> "Expected dc_boot.bin and dc_flash.bin (or the equivalent Flycast BIOS files)."
+            "dreamcast" -> "Flycast looks for dc/dc_boot.bin or dc/dc_bios.bin. An optional dc/dc_nvmem.bin preserves flash data; common BIOS names are normalized when imported."
             "ps1" -> "Select the folder containing your legally obtained PlayStation BIOS file(s)."
             "saturn" -> "Select the folder containing your legally obtained Saturn BIOS file(s)."
             else -> "Optional system files can be supplied here if this core needs them."
         }
         biosStatus.text = if (fileCount > 0) {
-            "$fileCount file${if (fileCount == 1) "" else "s"} available in the selected BIOS folder.\n$hint"
+            (if (system.biosRequired && !ready) "Required BIOS filenames were not found.\n" else "") +
+                "$fileCount file${if (fileCount == 1) "" else "s"} available in the selected BIOS folder.\n$hint"
         } else {
             (if (system.biosRequired) "A BIOS folder is required before this system can boot.\n" else "No BIOS folder selected.\n") + hint
         }
@@ -470,7 +472,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun systemDirectoryFor(systemId: String): String {
         val directory = biosDirectory(systemId)
-        return if (countFiles(directory) > 0) directory.absolutePath else filesDir.absolutePath
+        val system = Systems.byId(systemId)
+        val usable = if (system?.biosRequired == true) biosIsReady(systemId) else countFiles(directory) > 0
+        return if (usable) directory.absolutePath else filesDir.absolutePath
+    }
+
+    private fun biosIsReady(systemId: String): Boolean {
+        val system = Systems.byId(systemId) ?: return false
+        if (!system.biosRequired) return true
+        return when (systemId) {
+            // Flycast's Android libretro adapter appends `dc/` to the system
+            // directory and prefixes the BIOS lookup with `dc_`. Imports are
+            // normalized into that exact layout below.
+            "dreamcast" -> listOf("dc_boot.bin", "dc_bios.bin").any { name ->
+                File(biosDirectory(systemId), "dc/$name").let { it.isFile && it.length() > 0L }
+            }
+            else -> biosDirectory(systemId).walkTopDown().any { it.isFile && it.length() > 0L }
+        }
     }
 
     private fun countFiles(directory: File): Int = directory.listFiles()?.sumOf { child ->
@@ -492,13 +510,41 @@ class MainActivity : AppCompatActivity() {
             if (!node.isFile || (node.length() ?: 0L) <= 0L) return 0
             require((node.length() ?: 0L) <= MAX_BIOS_FILE_BYTES) { "A BIOS file is too large to import." }
             val output = File(targetDirectory, safeName)
+            output.parentFile?.mkdirs()
             contentResolver.openInputStream(node.uri).use { input ->
                 requireNotNull(input) { "Android could not read ${node.name}." }
                 FileOutputStream(output).use { outputStream -> input.copyTo(outputStream, BUFFER_SIZE) }
             }
             return 1
         }
-        return root.listFiles().sumOf { copyNode(it, destination) }
+        val imported = root.listFiles().sumOf { copyNode(it, destination) }
+        if (systemId == "dreamcast") normalizeDreamcastBios(destination)
+        return imported
+    }
+
+    private fun normalizeDreamcastBios(root: File) {
+        val targetDirectory = File(root, "dc").apply { mkdirs() }
+        val aliases = mapOf(
+            "boot.bin" to "dc_boot.bin",
+            "dc_boot.bin" to "dc_boot.bin",
+            "dc_boot.bin.bin" to "dc_boot.bin",
+            "bios.bin" to "dc_bios.bin",
+            "dc_bios.bin" to "dc_bios.bin",
+            "dc_bios.bin.bin" to "dc_bios.bin",
+            "flash.bin" to "dc_flash.bin",
+            "dc_flash.bin" to "dc_flash.bin",
+            "dc_flash.bin.bin" to "dc_flash.bin",
+            "nvmem.bin" to "dc_nvmem.bin",
+            "dc_nvmem.bin" to "dc_nvmem.bin",
+            "dc_nvmem.bin.bin" to "dc_nvmem.bin",
+        )
+        root.walkTopDown()
+            .filter { it.isFile && it.length() > 0L }
+            .forEach { source ->
+                val targetName = aliases[source.name.lowercase()] ?: return@forEach
+                val target = File(targetDirectory, targetName)
+                if (source.absoluteFile != target.absoluteFile) source.copyTo(target, overwrite = true)
+            }
     }
 
     private fun sectionHeading(title: String, meta: String) = LinearLayout(this).apply {

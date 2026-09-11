@@ -162,7 +162,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
                         measuredFrames = 0
                         continue
                     }
-                    NativeCoreBridge.runFrame()
+                    if (!NativeCoreBridge.runFrame()) {
+                        running.set(false)
+                        post { onStatus(NativeCoreBridge.lastError().ifBlank { "The native core stopped unexpectedly" }) }
+                        break
+                    }
                     requestRender()
                     measuredFrames++
                     val now = System.nanoTime()
@@ -293,7 +297,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             GLES20.glViewport(0, 0, width, height)
         }
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
-        NativeCoreBridge.runFrame()
+        if (!NativeCoreBridge.runFrame()) {
+            running.set(false)
+            statusCallback?.invoke(NativeCoreBridge.lastError().ifBlank { "The native core stopped unexpectedly" })
+            return
+        }
         gameRenderer.presentHardwareFrame(viewport)
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
     }
@@ -475,8 +483,14 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             if (coreName.contains("ppsspp")) {
                 hardwareTargetWidth = 480
                 hardwareTargetHeight = 272
+            } else if (coreName.contains("flycast")) {
+                // Flycast's default 480-line 16:9 output is 853x480. A
+                // 640x480 target clips the core's viewport and some builds
+                // attempt to attach intermediate buffers at the larger size.
+                hardwareTargetWidth = 853
+                hardwareTargetHeight = 480
             } else {
-                // N64, Dreamcast, GameCube/Wii and Play! advertise a 4:3
+                // N64, GameCube/Wii and Play! advertise a 4:3
                 // 640x480-style backbuffer. The core can still change its
                 // runtime geometry; the final presentation uses that ratio.
                 hardwareTargetWidth = 640

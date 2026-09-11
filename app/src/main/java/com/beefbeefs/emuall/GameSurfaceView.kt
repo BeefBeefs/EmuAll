@@ -267,6 +267,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         // keeps their fixed 480p/PSP-sized backbuffer independent from the
         // phone's portrait dimensions and lets us scale it cleanly below.
         gameRenderer.ensureHardwareTarget()
+        // A few hardware cores (especially Play!) can spend several seconds
+        // producing their first frame. Starting before Android delivers the
+        // Activity's initial focus event can overlap the five-second input
+        // dispatch deadline and cause an ANR even though retro_run succeeds.
+        if (!hardwareStarted.get() && !hasWindowFocus()) return
         val aspect = NativeCoreBridge.videoAspectRatio().takeIf { it.isFinite() && it > 0.01f }?.toDouble()
         val viewport = fitViewport(width, height, aspect)
         if (hardwareStarted.get() && paused.get()) {

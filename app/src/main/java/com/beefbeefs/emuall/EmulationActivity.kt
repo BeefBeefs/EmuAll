@@ -9,11 +9,13 @@ import android.view.KeyEvent
 import android.view.Menu
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
+import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -32,6 +34,8 @@ class EmulationActivity : AppCompatActivity() {
     private var draggedControl: View? = null
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
+    private val controlPlaceholders = mutableMapOf<Int, View>()
+    private var individualControlsReady = false
     private var lastSessionStatus = "Starting core…"
     // Rotation can destroy/recreate a window while Android reports the old
     // Activity as finishing. Only an explicit user exit is allowed to stop
@@ -291,7 +295,10 @@ class EmulationActivity : AppCompatActivity() {
                 bottomMargin = dp(if (hasCPad) 112 else 8)
             }
         }
-        controls.post { applySavedControlPositions(orientation) }
+        controls.post {
+            ensureIndividualControlLayout()
+            applySavedControlPositions(orientation)
+        }
     }
 
     private fun enterControlEditMode() {
@@ -301,8 +308,8 @@ class EmulationActivity : AppCompatActivity() {
         findViewById<Button>(R.id.editControlsButton).text = "Save"
         setToolbarActionsEnabled(false)
         findViewById<TextView>(R.id.sessionStatus).text =
-            "Move controls · drag a control group, then tap Save"
-        controlGroups().filter { it.visibility == View.VISIBLE }.forEach {
+            "Move controls · drag each button or stick, then tap Save"
+        movableControls().filter { it.isShown }.forEach {
             it.scaleX = 1.04f
             it.scaleY = 1.04f
             it.elevation = dp(8).toFloat()
@@ -314,7 +321,7 @@ class EmulationActivity : AppCompatActivity() {
         if (save) saveControlPositions(layoutOrientation)
         draggedControl = null
         editingControls = false
-        controlGroups().forEach {
+        movableControls().forEach {
             it.scaleX = 1f
             it.scaleY = 1f
             it.elevation = 0f
@@ -342,12 +349,56 @@ class EmulationActivity : AppCompatActivity() {
 
     private fun controlGroups(): List<View> = CONTROL_GROUPS.map { findViewById(it.second) }
 
+    private fun movableControls(): List<View> = MOVABLE_CONTROLS.map { findViewById(it.second) }
+
+    /**
+     * Move every visible nested button into the top-level control overlay so
+     * it can be positioned and touched independently. A same-sized Space is
+     * left in the original GridLayout/LinearLayout as a layout anchor; this
+     * preserves all existing system- and orientation-specific defaults.
+     */
+    private fun ensureIndividualControlLayout() {
+        if (individualControlsReady) return
+        val controls = findViewById<FrameLayout>(R.id.gameControls)
+        if (controls.width <= 0 || controls.height <= 0) return
+        val overlayLocation = IntArray(2)
+        controls.getLocationOnScreen(overlayLocation)
+        var laidOutControlFound = false
+
+        MOVABLE_CONTROLS.forEach { (_, id) ->
+            val view = findViewById<View>(id)
+            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) return@forEach
+            laidOutControlFound = true
+            if (view.parent === controls) return@forEach
+            val parent = view.parent as? ViewGroup ?: return@forEach
+            val index = parent.indexOfChild(view)
+            val screenLocation = IntArray(2)
+            view.getLocationOnScreen(screenLocation)
+            val measuredWidth = view.width
+            val measuredHeight = view.height
+            val originalLayoutParams = view.layoutParams
+            val placeholder = Space(this).apply {
+                visibility = view.visibility
+                layoutParams = originalLayoutParams
+            }
+            parent.removeViewAt(index)
+            parent.addView(placeholder, index)
+            controls.addView(view, FrameLayout.LayoutParams(measuredWidth, measuredHeight))
+            view.translationX = 0f
+            view.translationY = 0f
+            view.x = (screenLocation[0] - overlayLocation[0]).toFloat()
+            view.y = (screenLocation[1] - overlayLocation[1]).toFloat()
+            controlPlaceholders[id] = placeholder
+        }
+        individualControlsReady = laidOutControlFound
+    }
+
     private fun saveControlPositions(orientation: Int) {
         val controls = findViewById<FrameLayout>(R.id.gameControls)
         if (controls.width <= 0 || controls.height <= 0) return
-        val positions = CONTROL_GROUPS.mapNotNull { (name, id) ->
+        val positions = MOVABLE_CONTROLS.mapNotNull { (name, id) ->
             val view = findViewById<View>(id)
-            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) return@mapNotNull null
+            if (!view.isShown || view.width <= 0 || view.height <= 0) return@mapNotNull null
             val maxX = (controls.width - view.width).coerceAtLeast(1)
             val maxY = (controls.height - view.height).coerceAtLeast(1)
             name to VirtualControlLayoutStore.Position(
@@ -360,10 +411,18 @@ class EmulationActivity : AppCompatActivity() {
 
     private fun applySavedControlPositions(orientation: Int) {
         val controls = findViewById<FrameLayout>(R.id.gameControls)
-        if (controls.width <= 0 || controls.height <= 0) return
-        CONTROL_GROUPS.forEach { (name, id) ->
+        if (!individualControlsReady || controls.width <= 0 || controls.height <= 0) return
+        val overlayLocation = IntArray(2)
+        controls.getLocationOnScreen(overlayLocation)
+        MOVABLE_CONTROLS.forEach { (name, id) ->
             val view = findViewById<View>(id)
-            if (view.visibility != View.VISIBLE) return@forEach
+            if (!view.isShown) return@forEach
+            controlPlaceholders[id]?.let { placeholder ->
+                val defaultLocation = IntArray(2)
+                placeholder.getLocationOnScreen(defaultLocation)
+                view.x = (defaultLocation[0] - overlayLocation[0]).toFloat()
+                view.y = (defaultLocation[1] - overlayLocation[1]).toFloat()
+            }
             val saved = controlLayoutStore.position(systemId, orientation, name) ?: return@forEach
             val maxX = (controls.width - view.width).coerceAtLeast(0)
             val maxY = (controls.height - view.height).coerceAtLeast(0)
@@ -376,8 +435,8 @@ class EmulationActivity : AppCompatActivity() {
         if (!editingControls) return super.dispatchTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                val target = controlGroups().asReversed().firstOrNull { view ->
-                    if (view.visibility != View.VISIBLE) return@firstOrNull false
+                val target = movableControls().asReversed().firstOrNull { view ->
+                    if (!view.isShown) return@firstOrNull false
                     val location = IntArray(2)
                     view.getLocationOnScreen(location)
                     event.rawX >= location[0] && event.rawX <= location[0] + view.width &&
@@ -534,8 +593,8 @@ class EmulationActivity : AppCompatActivity() {
             R.id.downButton to ControllerMappingStore.BUTTON_DOWN,
             R.id.leftButton to ControllerMappingStore.BUTTON_LEFT,
             R.id.rightButton to ControllerMappingStore.BUTTON_RIGHT,
-            R.id.aButton to ControllerMappingStore.BUTTON_A,
-            R.id.bButton to ControllerMappingStore.BUTTON_B,
+            R.id.aButton to (if (systemId == "dreamcast") ControllerMappingStore.BUTTON_B else ControllerMappingStore.BUTTON_A),
+            R.id.bButton to (if (systemId == "dreamcast") ControllerMappingStore.BUTTON_A else ControllerMappingStore.BUTTON_B),
             R.id.xButton to ControllerMappingStore.BUTTON_X,
             R.id.yButton to ControllerMappingStore.BUTTON_Y,
             // Libretro's PlayStation convention is B=Cross, A=Circle,
@@ -601,6 +660,33 @@ class EmulationActivity : AppCompatActivity() {
             "actions" to R.id.actionButtons,
             "c_buttons" to R.id.cButtonPad,
             "center" to R.id.centerButtons,
+        )
+        private val MOVABLE_CONTROLS = listOf(
+            "up" to R.id.upButton,
+            "down" to R.id.downButton,
+            "left" to R.id.leftButton,
+            "right" to R.id.rightButton,
+            "left_stick" to R.id.leftAnalogStick,
+            "right_stick" to R.id.rightAnalogStick,
+            "a" to R.id.aButton,
+            "b" to R.id.bButton,
+            "x" to R.id.xButton,
+            "y" to R.id.yButton,
+            "triangle" to R.id.triangleButton,
+            "square" to R.id.squareButton,
+            "circle" to R.id.circleButton,
+            "cross" to R.id.crossButton,
+            "l" to R.id.lButton,
+            "r" to R.id.rButton,
+            "z" to R.id.zButton,
+            "l2" to R.id.l2Button,
+            "r2" to R.id.r2Button,
+            "c_up" to R.id.cUpButton,
+            "c_down" to R.id.cDownButton,
+            "c_left" to R.id.cLeftButton,
+            "c_right" to R.id.cRightButton,
+            "select" to R.id.selectButton,
+            "start" to R.id.startButton,
         )
         const val EXTRA_ROM = "rom"
         const val EXTRA_SAVE = "save"

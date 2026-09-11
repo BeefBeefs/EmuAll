@@ -424,6 +424,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         private var hardwareTargetHeight = 480
         private var positionLocation = -1
         private var textureCoordinateLocation = -1
+        private var samplerLocation = -1
         private val hardwareVertices: FloatBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             // GLES textures use a bottom-left origin; hardware output should
             // not receive the software path's vertical flip.
@@ -444,6 +445,7 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             program = GLES20.glCreateProgram().also { GLES20.glAttachShader(it, vertex); GLES20.glAttachShader(it, fragment); GLES20.glLinkProgram(it) }
             positionLocation = GLES20.glGetAttribLocation(program, "p")
             textureCoordinateLocation = GLES20.glGetAttribLocation(program, "t")
+            samplerLocation = GLES20.glGetUniformLocation(program, "s")
             val textures = IntArray(1); GLES20.glGenTextures(1, textures, 0); texture = textures[0]
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST)
@@ -524,11 +526,20 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
         fun presentHardwareFrame(viewport: IntArray) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+            GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glDisable(GLES20.GL_CULL_FACE)
+            GLES20.glColorMask(true, true, true, true)
+            GLES20.glDepthMask(false)
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             if (hardwareTexture == 0) return
             GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
             GLES20.glUseProgram(program)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, hardwareTexture)
+            if (samplerLocation >= 0) GLES20.glUniform1i(samplerLocation, 0)
             hardwareVertices.position(0)
             GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 16, hardwareVertices)
             GLES20.glEnableVertexAttribArray(positionLocation)

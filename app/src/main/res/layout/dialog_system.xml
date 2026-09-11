@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/panel"
+    android:orientation="vertical"
+    android:padding="22dp">
+
+    <TextView
+        android:id="@+id/systemKicker"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/accent"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.12" />
+
+    <TextView
+        android:id="@+id/systemTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="@color/text_primary"
+        android:textSize="28sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/coreName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="7dp"
+        android:textColor="@color/orange"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/systemFormats"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:lineSpacingExtra="3dp"
+        android:textColor="@color/text_muted"
+        android:textSize="13sp" />
+
+    <Button
+        android:id="@+id/chooseGameButton"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_marginTop="20dp"
+        android:background="@drawable/button_primary"
+        android:text="Choose Game"
+        android:textAllCaps="false"
+        android:textColor="#0B1208"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/cancelButton"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="9dp"
+        android:background="@drawable/button_secondary"
+        android:text="Cancel"
+        android:textAllCaps="false"
+        android:textColor="@color/text_primary"
+        android:textStyle="bold" />
+</LinearLayout>

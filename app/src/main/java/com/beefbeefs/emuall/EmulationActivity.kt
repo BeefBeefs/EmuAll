@@ -75,12 +75,12 @@ class EmulationActivity : AppCompatActivity() {
                 body.removeView(controls)
 
                 val left = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
+                    this.orientation = LinearLayout.VERTICAL
                     gravity = android.view.Gravity.CENTER
                     addView(directionalPad, LinearLayout.LayoutParams(dp(164), dp(164)))
                 }
                 val right = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
+                    this.orientation = LinearLayout.VERTICAL
                     gravity = android.view.Gravity.CENTER
                     addView(actionButtons, LinearLayout.LayoutParams(dp(178), LinearLayout.LayoutParams.WRAP_CONTENT))
                     addView(centerButtons, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {

@@ -236,6 +236,11 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     /** Runs one hardware frame on the GLSurfaceView thread, where the GL context is current. */
     private fun renderHardwareFrame() {
+        // Establish a non-zero viewport before starting a core.  Several
+        // hardware renderers inspect GL_VIEWPORT while their context_reset
+        // callback initializes framebuffers during the first start.
+        GLES20.glViewport(0, 0, getWidth(), getHeight())
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         startHardwareSessionIfNeeded()
         if (!hardwareStarted.get()) return
         val session = hardwareSession ?: return
@@ -255,8 +260,6 @@ class GameSurfaceView @JvmOverloads constructor(context: Context, attrs: Attribu
             }
             statusCallback?.invoke(message)
         }
-        GLES20.glViewport(0, 0, getWidth(), getHeight())
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         NativeCoreBridge.runFrame()
         saveThumbnail?.let { gameRenderer.captureHardwareThumbnail(it) }
     }

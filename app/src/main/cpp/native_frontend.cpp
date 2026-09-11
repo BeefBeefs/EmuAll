@@ -94,6 +94,10 @@ bool environment(unsigned command, void* data) {
                  callback->context_type != RETRO_HW_CONTEXT_OPENGL_CORE &&
                  callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
                  callback->context_type != RETRO_HW_CONTEXT_OPENGLES_VERSION)) return false;
+            __android_log_print(ANDROID_LOG_INFO, "EmuAllNative",
+                "Hardware render request: context=%d depth=%d stencil=%d version=%u.%u",
+                static_cast<int>(callback->context_type), callback->depth, callback->stencil,
+                callback->version_major, callback->version_minor);
             callback->context_type = RETRO_HW_CONTEXT_OPENGLES3;
             callback->version_major = 3;
             callback->version_minor = 0;

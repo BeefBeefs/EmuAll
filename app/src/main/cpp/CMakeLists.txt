@@ -26,8 +26,10 @@ set_target_properties(mgba_libretro PROPERTIES PREFIX "lib")
 target_compile_options(mgba_libretro PRIVATE -O3 -DNDEBUG)
 
 add_library(emuall_frontend SHARED native_frontend.cpp)
-add_dependencies(emuall_frontend mgba_libretro)
+add_library(emuall_core_compat SHARED core_compat.cpp)
+add_dependencies(emuall_frontend mgba_libretro emuall_core_compat)
 target_compile_options(emuall_frontend PRIVATE -O2)
+target_compile_options(emuall_core_compat PRIVATE -O2)
 
 find_library(log-lib log)
 find_library(android-lib android)
@@ -41,5 +43,10 @@ target_link_libraries(
     ${android-lib}
     ${gles-lib}
     ${egl-lib}
+    ${dl-lib}
+)
+
+target_link_libraries(
+    emuall_core_compat
     ${dl-lib}
 )

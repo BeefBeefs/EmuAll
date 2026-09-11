@@ -11,7 +11,7 @@ object NativeCoreBridge {
     }
 
     external fun frontendVersion(): String
-    external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, hardwareRendering: Boolean): Boolean
+    external fun start(corePath: String, romPath: String, savePath: String, systemDirectory: String, hardwareRendering: Boolean, assetManager: android.content.res.AssetManager): Boolean
     external fun setHardwareFramebuffer(framebuffer: Int)
     external fun setGraphicsContextVersion(major: Int, minor: Int)
     external fun hardwareContextDestroy()
@@ -34,4 +34,5 @@ object NativeCoreBridge {
     external fun stop()
     external fun lastError(): String
     external fun diagnostics(): String
+    external fun diagnosticMarker(message: String)
 }

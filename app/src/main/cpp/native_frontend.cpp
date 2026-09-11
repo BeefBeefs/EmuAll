@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <android/asset_manager_jni.h>
 #include <android/log.h>
 #include <dlfcn.h>
 #include <EGL/egl.h>
@@ -104,6 +105,7 @@ int diagnosticFd = -1;
 // global loader group before Flycast is relocated; otherwise the weak symbol
 // resolves to null and Flycast falls back to the blocked /dev/ashmem device.
 void* androidRuntimeHandle = nullptr;
+void* coreCompatibilityHandle = nullptr;
 
 void open_diagnostic_file(const std::string& path) {
     if (diagnosticFd >= 0) close(diagnosticFd);
@@ -615,6 +617,30 @@ bool load_api(const char* path) {
         record_diagnostic(std::string("Android shared-memory runtime: ") +
             (sharedMemory ? "available" : "unavailable"));
     }
+    if (!coreCompatibilityHandle) {
+        coreCompatibilityHandle = dlopen("libemuall_core_compat.so", RTLD_NOW | RTLD_GLOBAL);
+        void* sharedMemoryBridge = coreCompatibilityHandle
+            ? dlsym(coreCompatibilityHandle, "ASharedMemory_create") : nullptr;
+        record_diagnostic(std::string("Core shared-memory bridge: ") +
+            (sharedMemoryBridge ? "available" : "unavailable"));
+    }
+    if (is_core("flycast")) {
+        using SharedMemoryCreate = int (*)(const char*, size_t);
+        auto createSharedMemory = coreCompatibilityHandle
+            ? reinterpret_cast<SharedMemoryCreate>(
+                dlsym(coreCompatibilityHandle, "ASharedMemory_create"))
+            : nullptr;
+        errno = 0;
+        const int probe = createSharedMemory
+            ? createSharedMemory("EmuAll Flycast probe", 4096) : -1;
+        if (probe >= 0) close(probe);
+        record_diagnostic(std::string("Flycast shared-memory allocation probe: ") +
+            (probe >= 0 ? "passed" : "failed (errno " + std::to_string(errno) + ")"));
+        if (probe < 0) {
+            g.lastError = "Android denied the shared memory required by Flycast";
+            return false;
+        }
+    }
     g.api.handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!g.api.handle) {
         const char* error = dlerror();
@@ -640,7 +666,7 @@ bool load_api(const char* path) {
     return true;
 }
 
-bool configure_android_core_runtime(JNIEnv* env) {
+bool configure_android_core_runtime(JNIEnv* env, jobject javaAssetManager) {
     if (!is_core("play")) return true;
 
     // Play!'s libretro build starts an Android emulation thread from
@@ -664,6 +690,20 @@ bool configure_android_core_runtime(JNIEnv* env) {
     }
     setJavaVm(vm);
     record_diagnostic("Initialized Play! Android JavaVM bridge");
+
+    using SetAssetManager = void (*)(AAssetManager*);
+    auto setAssetManager = reinterpret_cast<SetAssetManager>(dlsym(
+        g.api.handle,
+        "_ZN9Framework7Android13CAssetManager15SetAssetManagerEP13AAssetManager"));
+    AAssetManager* assetManager = javaAssetManager
+        ? AAssetManager_fromJava(env, javaAssetManager) : nullptr;
+    if (!setAssetManager || !assetManager) {
+        g.lastError = "Could not initialize Play! Android asset manager";
+        record_diagnostic(g.lastError);
+        return false;
+    }
+    setAssetManager(assetManager);
+    record_diagnostic("Initialized Play! Android asset manager");
     return true;
 }
 
@@ -845,9 +885,14 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_
     return env->NewStringUTF("Libretro v1 · Vulkan preferred · GLES3 hardware path");
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_diagnosticMarker(
+        JNIEnv* env, jobject, jstring message) {
+    record_diagnostic(from_java(env, message));
+}
+
 extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge_start(
         JNIEnv* env, jobject, jstring corePath, jstring romPath, jstring savePath, jstring systemDirectory,
-        jboolean hardwareRendering) {
+        jboolean hardwareRendering, jobject assetManager) {
     // The GL view binds its frontend FBO before starting the core. Preserve
     // that ID across the session cleanup below; otherwise stop_session()
     // would erase it just before retro_load_game() negotiates hardware
@@ -889,7 +934,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_beefbeefs_emuall_NativeCoreBridge
         return false;
     }
     record_diagnostic("Loaded libretro API symbols");
-    if (!configure_android_core_runtime(env)) {
+    if (!configure_android_core_runtime(env, assetManager)) {
         stop_session();
         return false;
     }

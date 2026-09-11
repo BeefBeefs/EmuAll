@@ -40,6 +40,7 @@ object GraphicsBackendSelector {
 
     fun select(context: Context, core: CoreDefinition): VideoBackend {
         return if (core.preferredVideoBackend == VideoBackend.VULKAN &&
+            AppPreferences.preferVulkan(context) &&
             core.supportsVulkanRendering && vulkanAvailable(context)
         ) VideoBackend.VULKAN else VideoBackend.OPENGL_ES
     }

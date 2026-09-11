@@ -24,6 +24,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -38,6 +39,9 @@ import java.util.zip.ZipInputStream
 
 class MainActivity : AppCompatActivity() {
     private lateinit var recentStore: RecentGameStore
+    private lateinit var homeSection: LinearLayout
+    private lateinit var homeRecentSection: LinearLayout
+    private lateinit var systemContent: LinearLayout
     private lateinit var recentSection: LinearLayout
     private lateinit var stateSection: LinearLayout
     private lateinit var controllerButton: Button
@@ -46,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var preparationStatus: TextView
     private lateinit var preparationProgress: ProgressBar
     private var preparationInProgress = false
+    private var showingHome = true
     private var selectedSystem = Systems.all.first()
     private val controllerMappingStore by lazy { ControllerMappingStore(this) }
     private val inputManager by lazy { getSystemService(INPUT_SERVICE) as InputManager }
@@ -62,6 +67,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         recentStore = RecentGameStore(this)
+        homeSection = findViewById(R.id.homeSection)
+        homeRecentSection = findViewById(R.id.homeRecentSection)
+        systemContent = findViewById(R.id.systemContent)
         recentSection = findViewById(R.id.recentSection)
         stateSection = findViewById(R.id.stateSection)
         controllerButton = findViewById(R.id.controllerMappingButton)
@@ -70,16 +78,21 @@ class MainActivity : AppCompatActivity() {
         preparationStatus = findViewById(R.id.preparationStatus)
         preparationProgress = findViewById(R.id.preparationProgress)
         controllerButton.setOnClickListener { showControllerMappingDialog() }
+        findViewById<TextView>(R.id.buildLabel).text = "NATIVE ENGINE · BUILD ${BuildConfig.VERSION_CODE} · v${BuildConfig.VERSION_NAME}"
         findViewById<TextView>(R.id.nativeStatus).text = runCatching {
             "${NativeCoreBridge.frontendVersion()} · OpenGL ES fallback ready"
         }.getOrElse { "Native frontend could not load: ${it.javaClass.simpleName}" }
+        findViewById<Button>(R.id.preferencesButton).setOnClickListener { showPreferencesDialog() }
         setupSystemSelector()
+        renderHome()
         inputManager.registerInputDeviceListener(inputDeviceListener, null)
     }
 
     override fun onResume() {
         super.onResume()
-        if (::recentStore.isInitialized) renderSystemPage()
+        if (::recentStore.isInitialized) {
+            if (showingHome) renderHome() else renderSystemPage()
+        }
     }
 
     override fun onDestroy() {
@@ -92,8 +105,14 @@ class MainActivity : AppCompatActivity() {
             adapter = SystemAdapter()
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    selectedSystem = Systems.all[position]
-                    renderSystemPage()
+                    if (position == 0) {
+                        showingHome = true
+                        renderHome()
+                    } else {
+                        selectedSystem = Systems.all[position - 1]
+                        showingHome = false
+                        renderSystemPage()
+                    }
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
@@ -101,6 +120,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderSystemPage() {
+        showingHome = false
+        homeSection.visibility = View.GONE
+        systemContent.visibility = View.VISIBLE
         val system = selectedSystem
         val core = CoreRegistry.forSystem(system.id)
         val playableCore = CoreRegistry.playableForSystem(this, system.id)
@@ -124,6 +146,96 @@ class MainActivity : AppCompatActivity() {
         refreshControllerButton()
         renderRecents()
         renderStates()
+    }
+
+    private fun renderHome() {
+        showingHome = true
+        homeSection.visibility = View.VISIBLE
+        systemContent.visibility = View.GONE
+        findViewById<TextView>(R.id.graphicsPreferenceValue).text = if (AppPreferences.preferVulkan(this)) {
+            "Vulkan first when supported · OpenGL ES fallback"
+        } else {
+            "OpenGL ES selected"
+        }
+        findViewById<TextView>(R.id.controllerPreferenceValue).text = if (hasController()) {
+            "Controller detected · mappings are per system"
+        } else {
+            "No controller detected · virtual controls available"
+        }
+        renderHomeRecents()
+    }
+
+    private fun renderHomeRecents() {
+        homeRecentSection.removeAllViews()
+        val games = recentStore.load().sortedByDescending { it.playedAt }.take(HOME_RECENT_LIMIT)
+        homeRecentSection.addView(sectionHeading("RECENTLY PLAYED", "${games.size} GAMES"))
+        if (games.isEmpty()) {
+            homeRecentSection.addView(emptyCard("Games you launch will appear here across every system."))
+            return
+        }
+        games.forEach { game ->
+            val system = Systems.byId(game.systemId)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(12), dp(12))
+                background = getDrawable(R.drawable.panel)
+            }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(label(game.name.substringBeforeLast('.'), 14f, R.color.text_primary, true))
+                addView(label(
+                    "${system?.shortName ?: game.systemId.uppercase()} · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(game.playedAt))}",
+                    11f,
+                    R.color.text_muted,
+                    false,
+                ))
+            }
+            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(actionButton("Play", true) {
+                if (CoreRegistry.playableForSystem(this, game.systemId) != null) {
+                    recentStore.touch(game.uri)
+                    launchGame(game.uri, game.name, game.systemId)
+                } else {
+                    Toast.makeText(this, "${system?.coreName ?: "This system"} is not playable on this device.", Toast.LENGTH_SHORT).show()
+                }
+            })
+            row.addView(actionButton("Remove", false) {
+                recentStore.remove(game.uri)
+                renderHome()
+            })
+            card.addView(row)
+            homeRecentSection.addView(card, cardParams())
+        }
+    }
+
+    private fun showPreferencesDialog() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+        }
+        val vulkan = Switch(this).apply {
+            text = "Prefer Vulkan when available"
+            setTextColor(getColor(R.color.text_primary))
+            isChecked = AppPreferences.preferVulkan(this@MainActivity)
+        }
+        val keepScreenOn = Switch(this).apply {
+            text = "Keep screen on while emulating"
+            setTextColor(getColor(R.color.text_primary))
+            isChecked = AppPreferences.keepScreenOn(this@MainActivity)
+        }
+        content.addView(vulkan)
+        content.addView(keepScreenOn)
+        AlertDialog.Builder(this)
+            .setTitle("Preferences")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                AppPreferences.setPreferVulkan(this, vulkan.isChecked)
+                AppPreferences.setKeepScreenOn(this, keepScreenOn.isChecked)
+                renderHome()
+            }
+            .show()
     }
 
     private fun openGamePicker() {
@@ -782,13 +894,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private inner class SystemAdapter : BaseAdapter() {
-        override fun getCount() = Systems.all.size
-        override fun getItem(position: Int) = Systems.all[position]
+        override fun getCount() = Systems.all.size + 1
+        override fun getItem(position: Int): SystemDefinition? = if (position == 0) null else Systems.all[position - 1]
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup?) =
-            systemLabel(convertView, Systems.all[position], false)
+            navigationLabel(convertView, position, false)
         override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup?) =
-            systemLabel(convertView, Systems.all[position], true)
+            navigationLabel(convertView, position, true)
+        private fun navigationLabel(convertView: View?, position: Int, dropdown: Boolean): TextView {
+            if (position == 0) {
+                return (convertView as? TextView ?: TextView(this@MainActivity)).apply {
+                    text = "HOME  ·  EmuAll"
+                    textSize = if (dropdown) 14f else 15f
+                    setTextColor(getColor(if (dropdown) R.color.accent else R.color.text_primary))
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(if (dropdown) 12 else 8), dp(14), dp(if (dropdown) 12 else 8))
+                    setBackgroundColor(getColor(if (dropdown) R.color.panel_raised else android.R.color.transparent))
+                }
+            }
+            return systemLabel(convertView, Systems.all[position - 1], dropdown)
+        }
         private fun systemLabel(convertView: View?, system: SystemDefinition, dropdown: Boolean) =
             (convertView as? TextView ?: TextView(this@MainActivity)).apply {
                 text = "${system.shortName}  ·  ${system.displayName}"
@@ -807,6 +932,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PICK_GAME = 1001
+        private const val HOME_RECENT_LIMIT = 8
         private const val BUFFER_SIZE = 64 * 1024
         private const val MAX_ROM_BYTES = 128L * 1024L * 1024L
         private const val MAX_DISC_IMAGE_BYTES = 16L * 1024L * 1024L * 1024L
